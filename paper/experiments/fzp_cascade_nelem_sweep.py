@@ -77,7 +77,7 @@ from paper.sweeps.standard_params import (
 _LOG = "fzp_cascade_nelem_sweep"
 SAVE_PREFIX = "fzp_cascade_nelem_sweep"
 ASPECT_RATIO = 8.0
-DEFAULT_NELEMS = (1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+DEFAULT_NELEMS = (1, 2, 3, 4, 5, 8, 10, 12, 15, 20, 25, 30)
 
 
 def _parse_args() -> argparse.Namespace:
