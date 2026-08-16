@@ -115,6 +115,14 @@ TARGETS: tuple[Target, ...] = (
         value="paper/experiments/xray_focusing_focal_sweep_comparison.py",
     ),
     Target(
+        key="fzp_cascade",
+        manuscript_result="FZP cascade comparison",
+        description="Optimized cascade vs coinciding-foci FZP cascade vs single FZP",
+        notebook="notebooks/fzp_cascade_comparison.ipynb",
+        kind="script",
+        value="paper/experiments/fzp_cascade_comparison.py",
+    ),
+    Target(
         key="figA1",
         manuscript_result="Fig. A.1",
         description="Partial coherence sweep",
@@ -200,6 +208,8 @@ def _build_command(target: Target, args: argparse.Namespace) -> list[str]:
             cmd += ["--workers-per-gpu", str(args.workers_per_gpu)]
         if args.data_dir:
             cmd += ["--data-dir", args.data_dir]
+    elif target.key == "fzp_cascade" and args.data_dir:
+        cmd += ["--save-dir", args.data_dir]
     return cmd
 
 
