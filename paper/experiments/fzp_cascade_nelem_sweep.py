@@ -9,10 +9,13 @@ aspect ratio 8:
 - a single Fresnel zone plate at the last-element focal length (independent
   of N; evaluated once)
 
+Each optimized cascade is repeated ``n_runs`` times (independent random
+initializations); FZP designs are deterministic and evaluated once per N.
+
 Submit on the cluster from the repository root:
 
     sbatch hpc/slurm/run_gpu_python.sh paper/experiments/fzp_cascade_nelem_sweep.py --save-dir paper_data
-    sbatch hpc/slurm/run_gpu_python.sh paper/experiments/fzp_cascade_nelem_sweep.py --nelems 1 2 3 4 5 6 8 10
+    sbatch hpc/slurm/run_gpu_python.sh paper/experiments/fzp_cascade_nelem_sweep.py --nelems 1 2 3 4 5 6 8 10 --n-runs 3
 """
 
 from __future__ import annotations
@@ -78,6 +81,7 @@ _LOG = "fzp_cascade_nelem_sweep"
 SAVE_PREFIX = "fzp_cascade_nelem_sweep"
 ASPECT_RATIO = 8.0
 DEFAULT_NELEMS = (1, 2, 3, 4, 5, 8, 10, 12, 15, 20, 25, 30)
+DEFAULT_N_RUNS = 3
 
 
 def _parse_args() -> argparse.Namespace:
@@ -103,6 +107,15 @@ def _parse_args() -> argparse.Namespace:
         nargs="+",
         default=list(DEFAULT_NELEMS),
         help="Element counts to sweep (default: 1 2 3 4 5 6 8 10).",
+    )
+    parser.add_argument(
+        "--n-runs",
+        type=int,
+        default=DEFAULT_N_RUNS,
+        help=(
+            "Independent optimization runs per element count "
+            f"(default: {DEFAULT_N_RUNS})."
+        ),
     )
     return parser.parse_args()
 
@@ -134,6 +147,9 @@ def main() -> None:
     nelems = np.array(sorted(set(int(n) for n in args.nelems)), dtype=int)
     if nelems.size == 0 or np.any(nelems < 1):
         raise ValueError("--nelems must be one or more integers >= 1")
+    n_runs = int(args.n_runs)
+    if n_runs < 1:
+        raise ValueError("--n-runs must be an integer >= 1")
 
     if args.device is not None:
         device = torch.device(args.device)
@@ -177,6 +193,7 @@ def main() -> None:
 
     script_start_time = console.script_start(_LOG)
     console.kv(_LOG, "nelems", nelems.tolist())
+    console.kv(_LOG, "n_runs", n_runs)
     console.kv(_LOG, "Nx", Nx)
     console.kv(_LOG, "aspect_ratio", ASPECT_RATIO)
     console.kv(_LOG, "element_thickness", element_thickness)
@@ -269,17 +286,17 @@ def main() -> None:
         f"fzp eff={fzp_efficiency:.6f} width={fzp_width} gain={fzp_gain:.4f}",
     )
 
-    opt_efficiencies = np.full(n_points, np.nan, dtype=np.float64)
+    opt_efficiencies = np.full((n_runs, n_points), np.nan, dtype=np.float64)
     fzp_cascade_efficiencies = np.full(n_points, np.nan, dtype=np.float64)
-    opt_widths = np.full(n_points, np.nan, dtype=np.float64)
+    opt_widths = np.full((n_runs, n_points), np.nan, dtype=np.float64)
     fzp_cascade_widths = np.full(n_points, np.nan, dtype=np.float64)
-    opt_gains = np.full(n_points, np.nan, dtype=np.float64)
+    opt_gains = np.full((n_runs, n_points), np.nan, dtype=np.float64)
     fzp_cascade_gains = np.full(n_points, np.nan, dtype=np.float64)
-    opt_objs = np.full(n_points, np.nan, dtype=np.float64)
+    opt_objs = np.full((n_runs, n_points), np.nan, dtype=np.float64)
     fzp_cascade_objs = np.full(n_points, np.nan, dtype=np.float64)
-    opt_rhos = np.zeros((n_points, max_rho_len), dtype=bool)
+    opt_rhos = np.zeros((n_runs, n_points, max_rho_len), dtype=bool)
     fzp_cascade_rhos = np.zeros((n_points, max_rho_len), dtype=bool)
-    opt_intensities = np.full((n_points, Nx), np.nan, dtype=np.float64)
+    opt_intensities = np.full((n_runs, n_points, Nx), np.nan, dtype=np.float64)
     fzp_cascade_intensities = np.full((n_points, Nx), np.nan, dtype=np.float64)
     fzp_focal_lengths = np.full((n_points, max_nelem), np.nan, dtype=np.float64)
     fzp_radii_theory = np.full((n_points, max_nelem), np.nan, dtype=np.float64)
@@ -300,6 +317,7 @@ def main() -> None:
         "r_max": float(r_max),
         "material": MATERIAL_DEFAULT,
         "nelems": nelems,
+        "n_runs": int(n_runs),
         "focusing_threshold": float(focusing_threshold),
         "crop_width": int(crop_width),
         "optimizer": "run_torch_optimization",
@@ -323,6 +341,7 @@ def main() -> None:
     def _payload() -> dict:
         return {
             "nelems": nelems,
+            "n_runs": int(n_runs),
             "opt_rhos": pack_binary_density(opt_rhos),
             "fzp_cascade_rhos": pack_binary_density(fzp_cascade_rhos),
             "fzp_x": pack_binary_density(fzp_x.detach().cpu().numpy()),
@@ -357,22 +376,6 @@ def main() -> None:
         )
         fwd_model_args = (elem_params, focusing_mask, z_dists, center_offsets)
 
-        console.banner(_LOG, f"topology optimization N={Nelem}")
-        opt_start_time = time.time()
-        raw_design, _obj_list, _intensity_list, _extra_list, model = run_torch_optimization(
-            sim_params,
-            opt_params,
-            fwd_model_args,
-            objective_function=forward_model_N_elements_mask,
-        )
-        console.elapsed(_LOG, f"optimization N={Nelem}", time.time() - opt_start_time)
-
-        x_tensor = torch.tensor(raw_design, dtype=torch.float64, device=device)
-        rho_tilde, _ = model.filter_density(x_tensor)
-        rho_bar = (rho_tilde > 0.5).to(dtype=float)
-        rho_bar_np = pack_binary_density(rho_bar.detach().cpu().numpy()).reshape(-1)
-        opt_rhos[i, : Nelem * n_half] = rho_bar_np[: Nelem * n_half]
-
         focal_lengths = _coinciding_focal_lengths(Nelem, f, inter_elem_dist)
         console.banner(_LOG, f"FZP cascade (coinciding foci) N={Nelem}")
         fzp_cascade_np, fzp_f, fzp_r_theory, fzp_r_used = fzp_cascade_half_profiles(
@@ -398,64 +401,105 @@ def main() -> None:
                 ),
             )
 
-        console.banner(_LOG, f"post-optimization metrics N={Nelem}")
-        opt_metrics = compute_opt_and_fzp_metrics_2d(
-            rho_bar, sim_params, fwd_model_args, **metric_kwargs
-        )
         cascade_metrics = compute_opt_and_fzp_metrics_2d(
             fzp_cascade_x, sim_params, fwd_model_args, **metric_kwargs
-        )
-
-        opt_gain = focusing_gain(
-            np.asarray(opt_metrics["opt_intensity_1d"]), focusing_threshold
         )
         fzp_cascade_gain = focusing_gain(
             np.asarray(cascade_metrics["opt_intensity_1d"]), focusing_threshold
         )
-
-        opt_efficiencies[i] = float(opt_metrics["opt_efficiency"])
         fzp_cascade_efficiencies[i] = float(cascade_metrics["opt_efficiency"])
-        opt_widths[i] = float(opt_metrics["opt_width"])
         fzp_cascade_widths[i] = float(cascade_metrics["opt_width"])
-        opt_gains[i] = float(opt_gain)
         fzp_cascade_gains[i] = float(fzp_cascade_gain)
-        opt_objs[i] = float(opt_metrics["opt_final_obj"])
         fzp_cascade_objs[i] = float(cascade_metrics["opt_final_obj"])
-        opt_I = np.asarray(opt_metrics["opt_intensity_1d"]).reshape(-1)
         cascade_I = np.asarray(cascade_metrics["opt_intensity_1d"]).reshape(-1)
-        n_opt_I = min(opt_I.shape[0], opt_intensities.shape[1])
         n_cascade_I = min(cascade_I.shape[0], fzp_cascade_intensities.shape[1])
-        opt_intensities[i, :n_opt_I] = opt_I[:n_opt_I]
         fzp_cascade_intensities[i, :n_cascade_I] = cascade_I[:n_cascade_I]
-
         console.info(
             _LOG,
             (
-                f"N={Nelem} opt eff={opt_efficiencies[i]:.6f} "
-                f"width={opt_widths[i]} gain={opt_gains[i]:.4f} | "
-                f"fzp_cascade eff={fzp_cascade_efficiencies[i]:.6f} "
-                f"width={fzp_cascade_widths[i]} gain={fzp_cascade_gains[i]:.4f} | "
-                f"fzp eff={fzp_efficiency:.6f} width={fzp_width} gain={fzp_gain:.4f}"
+                f"N={Nelem} fzp_cascade eff={fzp_cascade_efficiencies[i]:.6f} "
+                f"width={fzp_cascade_widths[i]} gain={fzp_cascade_gains[i]:.4f}"
             ),
         )
-
-        console.banner(_LOG, f"checkpoint save after N={Nelem}")
-        results_ts, results_stable = _save_outputs(
-            save_dir, save_time, params_dict, _payload()
-        )
-        console.file_saved(_LOG, results_ts)
-        console.file_saved(_LOG, results_stable)
-
         if device.type == "cuda":
-            del x_tensor, rho_tilde, rho_bar, fzp_cascade_x, model, raw_design
+            del fzp_cascade_x
             torch.cuda.empty_cache()
 
+        for run_id in range(n_runs):
+            console.banner(
+                _LOG, f"topology optimization N={Nelem} run {run_id + 1}/{n_runs}"
+            )
+            opt_start_time = time.time()
+            raw_design, _obj_list, _intensity_list, _extra_list, model = (
+                run_torch_optimization(
+                    sim_params,
+                    opt_params,
+                    fwd_model_args,
+                    objective_function=forward_model_N_elements_mask,
+                )
+            )
+            console.elapsed(
+                _LOG,
+                f"optimization N={Nelem} run {run_id + 1}/{n_runs}",
+                time.time() - opt_start_time,
+            )
+
+            x_tensor = torch.tensor(raw_design, dtype=torch.float64, device=device)
+            rho_tilde, _ = model.filter_density(x_tensor)
+            rho_bar = (rho_tilde > 0.5).to(dtype=float)
+            rho_bar_np = pack_binary_density(rho_bar.detach().cpu().numpy()).reshape(-1)
+            opt_rhos[run_id, i, : Nelem * n_half] = rho_bar_np[: Nelem * n_half]
+
+            console.banner(
+                _LOG, f"post-optimization metrics N={Nelem} run {run_id + 1}/{n_runs}"
+            )
+            opt_metrics = compute_opt_and_fzp_metrics_2d(
+                rho_bar, sim_params, fwd_model_args, **metric_kwargs
+            )
+            opt_gain = focusing_gain(
+                np.asarray(opt_metrics["opt_intensity_1d"]), focusing_threshold
+            )
+            opt_efficiencies[run_id, i] = float(opt_metrics["opt_efficiency"])
+            opt_widths[run_id, i] = float(opt_metrics["opt_width"])
+            opt_gains[run_id, i] = float(opt_gain)
+            opt_objs[run_id, i] = float(opt_metrics["opt_final_obj"])
+            opt_I = np.asarray(opt_metrics["opt_intensity_1d"]).reshape(-1)
+            n_opt_I = min(opt_I.shape[0], opt_intensities.shape[-1])
+            opt_intensities[run_id, i, :n_opt_I] = opt_I[:n_opt_I]
+
+            console.info(
+                _LOG,
+                (
+                    f"N={Nelem} run {run_id + 1}/{n_runs} "
+                    f"opt eff={opt_efficiencies[run_id, i]:.6f} "
+                    f"width={opt_widths[run_id, i]} gain={opt_gains[run_id, i]:.4f} | "
+                    f"fzp_cascade eff={fzp_cascade_efficiencies[i]:.6f} "
+                    f"width={fzp_cascade_widths[i]} gain={fzp_cascade_gains[i]:.4f} | "
+                    f"fzp eff={fzp_efficiency:.6f} width={fzp_width} gain={fzp_gain:.4f}"
+                ),
+            )
+
+            console.banner(
+                _LOG, f"checkpoint save after N={Nelem} run {run_id + 1}/{n_runs}"
+            )
+            results_ts, results_stable = _save_outputs(
+                save_dir, save_time, params_dict, _payload()
+            )
+            console.file_saved(_LOG, results_ts)
+            console.file_saved(_LOG, results_stable)
+
+            if device.type == "cuda":
+                del x_tensor, rho_tilde, rho_bar, model, raw_design
+                torch.cuda.empty_cache()
+
     console.banner(_LOG, "efficiency vs N")
+    opt_eff_mean = np.nanmean(opt_efficiencies, axis=0)
+    opt_eff_std = np.nanstd(opt_efficiencies, axis=0)
     for i, Nelem in enumerate(nelems.tolist()):
         console.info(
             _LOG,
             (
-                f"N={Nelem:3d}  opt={opt_efficiencies[i]:.6f}  "
+                f"N={Nelem:3d}  opt={opt_eff_mean[i]:.6f} ± {opt_eff_std[i]:.6f}  "
                 f"fzp_cascade={fzp_cascade_efficiencies[i]:.6f}  "
                 f"fzp={fzp_efficiency:.6f}"
             ),
