@@ -112,19 +112,20 @@ def fzp_cascade_half_profiles(
     sim_params: SimParams,
     max_radius: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Build stacked FZP half-profiles with coinciding foci, clipped to ``max_radius``.
+    """Build intermediate-field FZP half-profiles with coinciding foci.
 
     Each plate ``i`` is a Fresnel zone plate designed for focal length
-    ``focal_lengths[i]`` (distance remaining to a common focus). The outer
-    radius is ``min(λ f_i / (2 Δr_min), max_radius)`` so no element exceeds
-    the cascade aperture. Beyond that radius the half-profile is solid (1),
-    matching ``zp_init`` / ``ZonePlate`` outside ``R_cutoff``.
+    ``focal_lengths[i]`` (distance remaining to a common focus). The most
+    upstream plate is patterned out to ``max_radius``. Downstream radii follow
+    the first-order cone, ``R_i = max_radius * f_i / f_0``, as in
+    intermediate-field FZP stacks. Beyond ``R_i`` the half-profile is open
+    (0), i.e. membrane only.
 
     Returns:
         stacked: concatenated half-profiles, length ``N * (Nx / 2)``
         focal_lengths: ``(N,)`` focal lengths used
         radii_theory: ``(N,)`` unconstrained FZP radii ``λ f_i / (2 Δr_min)``
-        radii_used: ``(N,)`` clipped radii actually patterned
+        radii_used: ``(N,)`` cone-matched radii actually patterned
     """
     lam_f = _scalar_float(lam)
     mfs = _scalar_float(min_feature_size)
@@ -143,19 +144,27 @@ def fzp_cascade_half_profiles(
     x_np = sim_params.x.detach().cpu().numpy()
     r_half = np.abs(x_np[:n_half])
 
+    n_plates = len(focal_lengths)
     profiles = []
-    f_arr = np.empty(len(focal_lengths), dtype=np.float64)
-    radii_theory = np.empty(len(focal_lengths), dtype=np.float64)
-    radii_used = np.empty(len(focal_lengths), dtype=np.float64)
+    f_arr = np.empty(n_plates, dtype=np.float64)
+    radii_theory = np.empty(n_plates, dtype=np.float64)
+    radii_used = np.empty(n_plates, dtype=np.float64)
     for i, f_i in enumerate(focal_lengths):
         f_i = _scalar_float(f_i)
         f_arr[i] = f_i
-        r_theory = (lam_f * f_i) / (2.0 * mfs)
-        r_used = min(r_theory, max_radius)
-        radii_theory[i] = r_theory
+        radii_theory[i] = (lam_f * f_i) / (2.0 * mfs)
+
+    if n_plates:
+        f_upstream = float(f_arr[0])
+        if f_upstream <= 0.0:
+            raise ValueError("upstream focal length must be positive")
+
+    for i in range(n_plates):
+        r_cone = max_radius * (f_arr[i] / f_upstream)
+        r_used = min(r_cone, float(radii_theory[i]), max_radius)
         radii_used[i] = r_used
         profile = np.asarray(
-            zp_init(lam_t, f_i, mfs, 1, sim_params),
+            zp_init(lam_t, f_arr[i], mfs, 1, sim_params),
             dtype=np.float64,
         ).reshape(-1)
         if profile.shape[0] != n_half:
@@ -163,7 +172,7 @@ def fzp_cascade_half_profiles(
                 f"zp_init half-profile length {profile.shape[0]} != Nx/2 ({n_half})"
             )
         profile = profile.copy()
-        profile[r_half > r_used] = 1.0
+        profile[r_half > r_used] = 0.0
         profiles.append(profile)
 
     stacked = np.concatenate(profiles, axis=0)

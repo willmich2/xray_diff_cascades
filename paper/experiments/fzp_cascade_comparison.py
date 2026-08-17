@@ -1,10 +1,10 @@
-"""Compare an optimized diffractive cascade to a coinciding-foci FZP cascade.
+"""Compare an optimized diffractive cascade to an intermediate-field FZP cascade.
 
 Optimizes an N-element cascade (default N=5) at aspect ratio 8, then evaluates:
 - the optimized cascade
-- an N-element Fresnel zone-plate cascade with focal lengths chosen so all
-  plates focus to the same plane, with outer radii clipped to the cascade
-  aperture
+- an N-element intermediate-field Fresnel zone-plate cascade with coinciding
+  foci: the upstream plate fills the cascade aperture and downstream radii
+  follow the first-order cone
 - a single Fresnel zone plate at the last-element focal length (paper baseline)
 
 Submit on the cluster from the repository root:
@@ -54,7 +54,6 @@ from paper.sweeps.standard_params import (
     F_DEFAULT,
     FOCUSING_THRESHOLD_DEFAULT,
     GAP_MAP_DEFAULT,
-    INTER_ELEM_DIST_DEFAULT,
     MATERIAL_DEFAULT,
     MATERIAL_MAP,
     MAX_EVAL_DEFAULT,
@@ -74,11 +73,16 @@ from paper.sweeps.standard_params import (
 _LOG = "fzp_cascade_comparison"
 SAVE_PREFIX = "fzp_cascade_comparison"
 ASPECT_RATIO = 8.0
+# Intermediate-field stacking gap (Gleber et al., Opt. Express 2014: 0.3–1 mm
+# at 10 keV), replacing the default 1 cm cascade spacing.
+INTER_ELEM_DIST = 1e-3
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Optimized cascade vs coinciding-foci FZP cascade vs single FZP."
+        description=(
+            "Optimized cascade vs intermediate-field FZP cascade vs single FZP."
+        )
     )
     parser.add_argument(
         "--save-dir",
@@ -123,7 +127,7 @@ def main() -> None:
     Nx = NX_DEFAULT
     dx = DX_DEFAULT
     f = F_DEFAULT
-    inter_elem_dist = INTER_ELEM_DIST_DEFAULT
+    inter_elem_dist = INTER_ELEM_DIST
     membrane_thickness = MEMBRANE_THICKNESS_DEFAULT
     min_feature_size = MIN_FEATURE_SIZE_DEFAULT
     element_thickness = ASPECT_RATIO * min_feature_size
@@ -150,6 +154,7 @@ def main() -> None:
     console.kv(_LOG, "Nx", Nx)
     console.kv(_LOG, "aspect_ratio", ASPECT_RATIO)
     console.kv(_LOG, "element_thickness", element_thickness)
+    console.kv(_LOG, "inter_elem_dist", inter_elem_dist)
     console.kv(_LOG, "r_max", r_max)
     console.kv(_LOG, "device", device)
 
@@ -225,7 +230,7 @@ def main() -> None:
 
     lam_center = lams[lams.argmax()]
     focal_lengths = _coinciding_focal_lengths(Nelem, f, inter_elem_dist)
-    console.banner(_LOG, "FZP cascade (coinciding foci)")
+    console.banner(_LOG, "FZP cascade (intermediate-field, coinciding foci)")
     fzp_cascade_np, fzp_focal_lengths, fzp_radii_theory, fzp_radii_used = (
         fzp_cascade_half_profiles(
             lam_center,

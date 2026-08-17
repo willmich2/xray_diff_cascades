@@ -117,7 +117,7 @@ TARGETS: tuple[Target, ...] = (
     Target(
         key="fzp_cascade",
         manuscript_result="FZP cascade comparison",
-        description="Optimized cascade vs coinciding-foci FZP cascade vs single FZP",
+        description="Optimized cascade vs intermediate-field FZP cascade vs single FZP",
         notebook="notebooks/fzp_cascade_comparison.ipynb",
         kind="script",
         value="paper/experiments/fzp_cascade_comparison.py",
