@@ -286,7 +286,7 @@ def main() -> None:
         "propagation_method": "angular",
     }
     opt_params_base = {
-        "min_feature_size": min_feature_size / 2.0,
+        "min_feature_size": min_feature_size / 3.0,
         "epsilon": epsilon,
         "tolerance": tolerance,
         "param_tolerance": param_tolerance,
