@@ -10,6 +10,8 @@ Optimizes an N-element cascade (default N=5) at aspect ratio 8, then evaluates:
 Submit on the cluster from the repository root:
 
     sbatch hpc/slurm/run_gpu_python.sh paper/experiments/fzp_cascade_comparison.py --save-dir paper_data
+    sbatch hpc/slurm/run_gpu_python.sh paper/experiments/fzp_cascade_comparison.py --inter-elem-dist 1e-2
+    sbatch hpc/slurm/run_gpu_python.sh paper/experiments/fzp_cascade_comparison.py --opt-inter-elem-dist 1e-2 --fzp-inter-elem-dist 1e-3
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ from paper.sweeps.standard_params import (
     F_DEFAULT,
     FOCUSING_THRESHOLD_DEFAULT,
     GAP_MAP_DEFAULT,
+    INTER_ELEM_DIST_DEFAULT,
     MATERIAL_DEFAULT,
     MATERIAL_MAP,
     MAX_EVAL_DEFAULT,
@@ -73,9 +76,10 @@ from paper.sweeps.standard_params import (
 _LOG = "fzp_cascade_comparison"
 SAVE_PREFIX = "fzp_cascade_comparison"
 ASPECT_RATIO = 8.0
-# Intermediate-field stacking gap (Gleber et al., Opt. Express 2014: 0.3–1 mm
-# at 10 keV), replacing the default 1 cm cascade spacing.
-INTER_ELEM_DIST = 1e-3
+# Default FZP stacking gap for intermediate-field coinciding-foci plates
+# (Gleber et al., Opt. Express 2014: 0.3–1 mm at 10 keV). The optimized
+# cascade keeps INTER_ELEM_DIST_DEFAULT (1 cm) unless overridden.
+FZP_INTER_ELEM_DIST_DEFAULT = 1e-3
 
 
 def _parse_args() -> argparse.Namespace:
@@ -100,11 +104,59 @@ def _parse_args() -> argparse.Namespace:
         default=5,
         help="Number of cascade elements (same for optimized and FZP stacks).",
     )
+    parser.add_argument(
+        "--inter-elem-dist",
+        type=float,
+        default=None,
+        help=(
+            "Inter-element distance (m) for both cascades. "
+            "Overridden per cascade by --opt-inter-elem-dist / "
+            "--fzp-inter-elem-dist."
+        ),
+    )
+    parser.add_argument(
+        "--opt-inter-elem-dist",
+        type=float,
+        default=None,
+        help=(
+            "Inter-element distance (m) for the optimized cascade "
+            f"(default: {INTER_ELEM_DIST_DEFAULT:g})."
+        ),
+    )
+    parser.add_argument(
+        "--fzp-inter-elem-dist",
+        type=float,
+        default=None,
+        help=(
+            "Inter-element distance (m) for the FZP cascade "
+            f"(default: {FZP_INTER_ELEM_DIST_DEFAULT:g})."
+        ),
+    )
     return parser.parse_args()
 
 
 def _coinciding_focal_lengths(nelem: int, f: float, inter_elem_dist: float) -> list[float]:
     return [f + (nelem - 1 - i) * inter_elem_dist for i in range(nelem)]
+
+
+def _resolve_inter_elem_dists(args: argparse.Namespace) -> tuple[float, float]:
+    shared = args.inter_elem_dist
+    opt_dist = INTER_ELEM_DIST_DEFAULT if args.opt_inter_elem_dist is None else args.opt_inter_elem_dist
+    fzp_dist = (
+        FZP_INTER_ELEM_DIST_DEFAULT
+        if args.fzp_inter_elem_dist is None
+        else args.fzp_inter_elem_dist
+    )
+    if shared is not None:
+        if args.opt_inter_elem_dist is None:
+            opt_dist = shared
+        if args.fzp_inter_elem_dist is None:
+            fzp_dist = shared
+    opt_dist = float(opt_dist)
+    fzp_dist = float(fzp_dist)
+    if opt_dist <= 0.0 or fzp_dist <= 0.0:
+        raise ValueError("inter-element distances must be > 0")
+    return opt_dist, fzp_dist
 
 
 def main() -> None:
@@ -127,7 +179,7 @@ def main() -> None:
     Nx = NX_DEFAULT
     dx = DX_DEFAULT
     f = F_DEFAULT
-    inter_elem_dist = INTER_ELEM_DIST
+    opt_inter_elem_dist, fzp_inter_elem_dist = _resolve_inter_elem_dists(args)
     membrane_thickness = MEMBRANE_THICKNESS_DEFAULT
     min_feature_size = MIN_FEATURE_SIZE_DEFAULT
     element_thickness = ASPECT_RATIO * min_feature_size
@@ -154,7 +206,8 @@ def main() -> None:
     console.kv(_LOG, "Nx", Nx)
     console.kv(_LOG, "aspect_ratio", ASPECT_RATIO)
     console.kv(_LOG, "element_thickness", element_thickness)
-    console.kv(_LOG, "inter_elem_dist", inter_elem_dist)
+    console.kv(_LOG, "opt_inter_elem_dist", opt_inter_elem_dist)
+    console.kv(_LOG, "fzp_inter_elem_dist", fzp_inter_elem_dist)
     console.kv(_LOG, "r_max", r_max)
     console.kv(_LOG, "device", device)
 
@@ -207,19 +260,25 @@ def main() -> None:
     n_center = int(2 * 1.22 * min_feature_size / dx)
     focusing_mask = torch.zeros(1, Nx, device=device)
     focusing_mask[0, Nx // 2 - n_center // 2 : Nx // 2 + n_center // 2] = 1.0
-    z_dists = torch.tensor(
-        (Nelem - 1) * (inter_elem_dist,) + (f,),
+    opt_z_dists = torch.tensor(
+        (Nelem - 1) * (opt_inter_elem_dist,) + (f,),
         device=device,
         dtype=torch.float64,
     )
-    fwd_model_args = (elem_params, focusing_mask, z_dists, center_offsets)
+    fzp_z_dists = torch.tensor(
+        (Nelem - 1) * (fzp_inter_elem_dist,) + (f,),
+        device=device,
+        dtype=torch.float64,
+    )
+    opt_fwd_model_args = (elem_params, focusing_mask, opt_z_dists, center_offsets)
+    fzp_fwd_model_args = (elem_params, focusing_mask, fzp_z_dists, center_offsets)
 
     console.banner(_LOG, "topology optimization")
     opt_start_time = time.time()
     raw_design, obj_list, _intensity_list, _extra_list, model = run_torch_optimization(
         sim_params,
         opt_params,
-        fwd_model_args,
+        opt_fwd_model_args,
         objective_function=forward_model_N_elements_mask,
     )
     console.elapsed(_LOG, "optimization", time.time() - opt_start_time)
@@ -229,7 +288,7 @@ def main() -> None:
     rho_bar = (rho_tilde > 0.5).to(dtype=float)
 
     lam_center = lams[lams.argmax()]
-    focal_lengths = _coinciding_focal_lengths(Nelem, f, inter_elem_dist)
+    focal_lengths = _coinciding_focal_lengths(Nelem, f, fzp_inter_elem_dist)
     console.banner(_LOG, "FZP cascade (intermediate-field, coinciding foci)")
     fzp_cascade_np, fzp_focal_lengths, fzp_radii_theory, fzp_radii_used = (
         fzp_cascade_half_profiles(
@@ -255,7 +314,7 @@ def main() -> None:
     opt_metrics = compute_opt_and_fzp_metrics_2d(
         rho_bar,
         sim_params,
-        fwd_model_args,
+        opt_fwd_model_args,
         min_feature_size=min_feature_size,
         focusing_threshold=focusing_threshold,
         crop_width=crop_width,
@@ -267,7 +326,7 @@ def main() -> None:
     cascade_metrics = compute_opt_and_fzp_metrics_2d(
         fzp_cascade_x,
         sim_params,
-        fwd_model_args,
+        fzp_fwd_model_args,
         min_feature_size=min_feature_size,
         focusing_threshold=focusing_threshold,
         crop_width=crop_width,
@@ -307,7 +366,9 @@ def main() -> None:
         "bandwidth": float(bandwidth),
         "min_feature_size": float(min_feature_size),
         "f": float(f),
-        "inter_elem_dist": float(inter_elem_dist),
+        "inter_elem_dist": float(opt_inter_elem_dist),
+        "opt_inter_elem_dist": float(opt_inter_elem_dist),
+        "fzp_inter_elem_dist": float(fzp_inter_elem_dist),
         "membrane_thickness": float(membrane_thickness),
         "element_thickness": float(element_thickness),
         "aspect_ratio": float(ASPECT_RATIO),
@@ -357,7 +418,9 @@ def main() -> None:
         "fzp_radii_theory": fzp_radii_theory,
         "fzp_radii_used": fzp_radii_used,
         "obj_list": obj_list_np,
-        "z_dists": z_dists.detach().cpu().numpy(),
+        "z_dists": opt_z_dists.detach().cpu().numpy(),
+        "opt_z_dists": opt_z_dists.detach().cpu().numpy(),
+        "fzp_z_dists": fzp_z_dists.detach().cpu().numpy(),
         "mask": focusing_mask.detach().cpu().numpy(),
     }
 
