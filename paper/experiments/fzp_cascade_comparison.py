@@ -242,7 +242,7 @@ def main() -> None:
     }
     opt_params = {
         "Nelem": Nelem,
-        "min_feature_size": min_feature_size / 4.0,
+        "min_feature_size": min_feature_size / 3.0,
         "epsilon": epsilon,
         "tolerance": tolerance,
         "param_tolerance": param_tolerance,
