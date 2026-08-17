@@ -85,9 +85,10 @@ ASPECT_RATIO = 8.0
 # Default FZP stacking gap for intermediate-field coinciding-foci plates
 # (Gleber et al., Opt. Express 2014: 0.3–1 mm at 10 keV). The optimized
 # cascade keeps INTER_ELEM_DIST_DEFAULT (1 cm) unless overridden.
+OPT_INTER_ELEM_DIST_DEFAULT = 1e-3
 FZP_INTER_ELEM_DIST_DEFAULT = 1e-3
 DEFAULT_NELEMS = (1, 2, 3, 4, 5, 8, 10, 12, 15, 20, 25, 30)
-DEFAULT_N_RUNS = 3
+DEFAULT_N_RUNS = 1
 
 
 def _parse_args() -> argparse.Namespace:
@@ -136,7 +137,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--opt-inter-elem-dist",
         type=float,
-        default=None,
+        default=OPT_INTER_ELEM_DIST_DEFAULT,
         help=(
             "Inter-element distance (m) for the optimized cascade "
             f"(default: {INTER_ELEM_DIST_DEFAULT:g})."
