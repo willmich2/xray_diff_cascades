@@ -87,7 +87,7 @@ ASPECT_RATIO = 8.0
 # cascade keeps INTER_ELEM_DIST_DEFAULT (1 cm) unless overridden.
 FZP_INTER_ELEM_DIST_DEFAULT = 1e-3
 DEFAULT_NELEMS = (1, 2, 3, 4, 5, 8, 10, 12, 15, 20, 25, 30)
-DEFAULT_N_RUNS = 1
+DEFAULT_N_RUNS = 3
 
 
 def _parse_args() -> argparse.Namespace:
@@ -286,7 +286,7 @@ def main() -> None:
         "propagation_method": "angular",
     }
     opt_params_base = {
-        "min_feature_size": min_feature_size / 3.0,
+        "min_feature_size": min_feature_size / 2.5,
         "epsilon": epsilon,
         "tolerance": tolerance,
         "param_tolerance": param_tolerance,
