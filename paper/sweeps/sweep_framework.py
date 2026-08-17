@@ -246,7 +246,7 @@ def _default_worker(task: dict[str, Any]) -> dict[str, Any]:
 
     opt_params = {
         "Nelem": Nelem,
-        "min_feature_size": float(params["min_feature_size"]) / 2.0,
+        "min_feature_size": float(params["min_feature_size"]),
         "epsilon": float(params["epsilon"]),
         "tolerance": float(params["tolerance"]),
         "param_tolerance": float(params["param_tolerance"]),

@@ -116,7 +116,7 @@ elem_params = {
 
 opt_params = {
     "Nelem": Nelem, 
-    "min_feature_size": min_feature_size / 2,
+    "min_feature_size": min_feature_size,
     "epsilon": epsilon, 
     "tolerance": tolerance, 
     "param_tolerance": param_tolerance, 
