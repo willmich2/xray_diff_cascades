@@ -56,6 +56,22 @@ PAPER_SWEEP_STUDIES: tuple[SweepStudy, ...] = (
         aliases=("mfs", "min_feature"),
     ),
     SweepStudy(
+        key="fzp_cascade_bandwidth_energy",
+        config_module="paper.sweeps.configs.fzp_cascade_bandwidth_energy_sweep",
+        manuscript_result="FZP cascade vs optimized cascade (bandwidth-energy)",
+        description="Bandwidth vs energy map for a 10-element FZP cascade vs optimized cascade",
+        notebooks=("notebooks/fzp_cascade_energy_bandwidth_aspect_ratio.ipynb",),
+        aliases=("fzp_cascade_bandwidth", "fzp_cascade_bw"),
+    ),
+    SweepStudy(
+        key="fzp_cascade_thickness_energy",
+        config_module="paper.sweeps.configs.fzp_cascade_thickness_energy_sweep",
+        manuscript_result="FZP cascade vs optimized cascade (thickness-energy)",
+        description="Thickness vs energy map for a 10-element FZP cascade vs optimized cascade",
+        notebooks=("notebooks/fzp_cascade_energy_bandwidth_aspect_ratio.ipynb",),
+        aliases=("fzp_cascade_thickness", "fzp_cascade_aspect_ratio"),
+    ),
+    SweepStudy(
         key="coherence_illumination",
         config_module="paper.sweeps.configs.coherence_illumination_sweep",
         manuscript_result="Appendix B, Fig. A.1",

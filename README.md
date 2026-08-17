@@ -55,6 +55,7 @@ Open the notebook for the figure you want to reproduce and run all cells. Each n
 | Fig. 1(d) | `notebooks/fig1d_focal_spot_comparison.ipynb` | `fig1d_xray_focusing_testing` |
 | Fig. 1(e) | `notebooks/fig1e_Nelem_sweep.ipynb` | `fig1_N_sweeps` |
 | Fig. 2(a) | `notebooks/fig2a_energy_bandwidth_aspect_ratio.ipynb` | `fig2a_bandwidth_energy_sweep`, `fig2a_thickness_energy_sweep` |
+| Fig. 2(a) FZP cascade | `notebooks/fzp_cascade_energy_bandwidth_aspect_ratio.ipynb` | `fzp_cascade_bandwidth_energy_sweep`, `fzp_cascade_thickness_energy_sweep` |
 | Fig. 2(b) | `notebooks/fig2b_mfs_sweep.ipynb` | `fig2b_Nelem_min_feature_sweep` |
 | Fig. 2(c) | `notebooks/fig2c_aspect_ratio_scaling.ipynb` | `fig2c_thickness_energy_sweep` |
 | Fig. 3(d) | `notebooks/fig3d_robustness.ipynb` | `fig3d_placement_robustness_results`, `fig3d_erosion_dilation_robustness_results`, `fig3d_thermal_robustness_results` |
@@ -89,6 +90,8 @@ python paper/reproduce.py run fig1e --data-dir paper_data --workers-per-gpu 2 --
 - `fig1c` → `notebooks/fig1c_element_visualization.ipynb`, same `fig1_N_sweeps` run as `fig1e`.
 - `fig2a_bandwidth` → `notebooks/fig2a_energy_bandwidth_aspect_ratio.ipynb`, prefix `fig2a_bandwidth_energy_sweep` (study `bandwidth_energy`).
 - `fig2a_thickness` → same notebook, prefix `fig2a_thickness_energy_sweep` (study `thickness_energy_fig2a`).
+- `fzp_cascade_bandwidth` → `notebooks/fzp_cascade_energy_bandwidth_aspect_ratio.ipynb`, prefix `fzp_cascade_bandwidth_energy_sweep` (study `fzp_cascade_bandwidth_energy`).
+- `fzp_cascade_thickness` → same notebook, prefix `fzp_cascade_thickness_energy_sweep` (study `fzp_cascade_thickness_energy`).
 - `fig2b` → `notebooks/fig2b_mfs_sweep.ipynb`, prefix `fig2b_Nelem_min_feature_sweep` (study `nelem_min_feature`).
 - `fig2c` → `notebooks/fig2c_aspect_ratio_scaling.ipynb`, prefix `fig2c_thickness_energy_sweep` (study `thickness_energy_main`).
 - `fig3_placement`, `fig3_erosion_dilation`, `fig3_thermal` → `notebooks/fig3d_robustness.ipynb`; postprocess outputs `fig3d_*_robustness_results`.
@@ -216,9 +219,11 @@ export DIFFRACTIVE_CASCADES_DATA_DIR=paper_data   # optional; or pass --save-dir
 sbatch hpc/slurm/run_sweep.sh n_sweeps --save-dir paper_data
 sbatch hpc/slurm/run_sweep.sh bandwidth_energy --save-dir paper_data
 sbatch hpc/slurm/run_sweep.sh thickness_energy_fig2a --save-dir paper_data --workers-per-gpu 2 --max-workers 4
+sbatch hpc/slurm/run_sweep.sh fzp_cascade_bandwidth_energy --save-dir paper_data
+sbatch hpc/slurm/run_sweep.sh fzp_cascade_thickness_energy --save-dir paper_data
 ```
 
-Study keys align with the [re-running optimizations](#re-running-optimizations-data-generation) section, for example `n_sweeps` (Fig. 1e/c), `bandwidth_energy` and `thickness_energy_fig2a` (Fig. 2a), `nelem_min_feature` (Fig. 2b), `thickness_energy_main` (Fig. 2c), `coherence_illumination` (Fig. A.1), `focal_length` / `inter_element_distance` (Fig. A.3).
+Study keys align with the [re-running optimizations](#re-running-optimizations-data-generation) section, for example `n_sweeps` (Fig. 1e/c), `bandwidth_energy` and `thickness_energy_fig2a` (Fig. 2a), `nelem_min_feature` (Fig. 2b), `thickness_energy_main` (Fig. 2c), `fzp_cascade_bandwidth_energy` / `fzp_cascade_thickness_energy` (10-element FZP cascade vs optimized cascade), `coherence_illumination` (Fig. A.1), `focal_length` / `inter_element_distance` (Fig. A.3).
 
 **`run_gpu_python.sh`** — generic launcher for robustness/postprocess and other repository Python scripts:
 

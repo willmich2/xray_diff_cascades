@@ -123,6 +123,22 @@ TARGETS: tuple[Target, ...] = (
         value="paper/experiments/fzp_cascade_comparison.py",
     ),
     Target(
+        key="fzp_cascade_bandwidth",
+        manuscript_result="FZP cascade vs optimized cascade (bandwidth-energy)",
+        description="Bandwidth-energy sweep: 10-element FZP cascade vs optimized cascade",
+        notebook="notebooks/fzp_cascade_energy_bandwidth_aspect_ratio.ipynb",
+        kind="sweep",
+        value="fzp_cascade_bandwidth_energy",
+    ),
+    Target(
+        key="fzp_cascade_thickness",
+        manuscript_result="FZP cascade vs optimized cascade (thickness-energy)",
+        description="Thickness-energy sweep: 10-element FZP cascade vs optimized cascade",
+        notebook="notebooks/fzp_cascade_energy_bandwidth_aspect_ratio.ipynb",
+        kind="sweep",
+        value="fzp_cascade_thickness_energy",
+    ),
+    Target(
         key="figA1",
         manuscript_result="Fig. A.1",
         description="Partial coherence sweep",
