@@ -123,6 +123,14 @@ TARGETS: tuple[Target, ...] = (
         value="paper/experiments/fzp_cascade_comparison.py",
     ),
     Target(
+        key="chromatic_focusing",
+        manuscript_result="Chromatic focusing experiment",
+        description="Single-plane vs prescribed-chromatic cascade focusing",
+        notebook="notebooks/chromatic_focusing.ipynb",
+        kind="script",
+        value="paper/experiments/chromatic_focusing.py",
+    ),
+    Target(
         key="fzp_cascade_bandwidth",
         manuscript_result="FZP cascade vs optimized cascade (bandwidth-energy)",
         description="Bandwidth-energy sweep: 10-element FZP cascade vs optimized cascade",
@@ -224,7 +232,7 @@ def _build_command(target: Target, args: argparse.Namespace) -> list[str]:
             cmd += ["--workers-per-gpu", str(args.workers_per_gpu)]
         if args.data_dir:
             cmd += ["--data-dir", args.data_dir]
-    elif target.key == "fzp_cascade" and args.data_dir:
+    elif target.key in ("fzp_cascade", "chromatic_focusing") and args.data_dir:
         cmd += ["--save-dir", args.data_dir]
     return cmd
 

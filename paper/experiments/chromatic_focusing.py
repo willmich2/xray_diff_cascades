@@ -10,9 +10,13 @@ Then scans per-wavelength intensity vs defocus for both designs and a
 single Fresnel zone plate, and records in-mask crosstalk at the prescribed
 planes.
 
-Submit from the repository root:
+Submit on the cluster from the repository root:
 
-    sbatch hpc/slurm/run_gpu_python.sh paper/experiments/chromatic_focusing.py
+    sbatch hpc/slurm/run_gpu_python.sh paper/experiments/chromatic_focusing.py --save-dir paper_data
+    sbatch hpc/slurm/run_gpu_python.sh paper/experiments/chromatic_focusing.py --nelem 10 --save-dir paper_data
+
+Locally:
+
     python paper/experiments/chromatic_focusing.py --save-dir paper_data
 """
 
@@ -20,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -383,48 +388,56 @@ def main() -> None:
             "morph_agg_beta": float(MORPH_AGG_BETA_DEFAULT),
         },
     }
-    np.save(f"{save_dir}/{SAVE_PREFIX}_params_{save_time}.npy", params_dict)
-
     x_full = sim_params.x.detach().cpu().numpy()
     half = int(crop_width) // 2
     cx = int(Nx) // 2
     x_crop = x_full[cx - half : cx + half]
 
-    save_sweep_results(
-        f"{save_dir}/{SAVE_PREFIX}_results_{save_time}.npz",
-        {
-            "lams": lams.detach().cpu().numpy(),
-            "weights": weights.detach().cpu().numpy(),
-            "energies_ev": energies_ev.detach().cpu().numpy(),
-            "z_dists": z_dists.detach().cpu().numpy(),
-            "z_last_per_wavelength": z_last_per_wavelength.detach().cpu().numpy(),
-            "z_eval": z_eval.detach().cpu().numpy(),
-            "fzp_theory_z": np.asarray(fzp_theory_z, dtype=np.float64),
-            "mask": focusing_mask.detach().cpu().numpy(),
-            "x_crop": x_crop.astype(np.float64),
-            "rho_bar_single": pack_binary_density(rho_single.detach().cpu().numpy()),
-            "rho_bar_chromatic": pack_binary_density(rho_chromatic.detach().cpu().numpy()),
-            "obj_list_single": np.asarray(obj_list_single, dtype=np.float32),
-            "obj_list_chromatic": np.asarray(obj_list_chromatic, dtype=np.float32),
-            "onaxis_single": scan_single["onaxis"],
-            "onaxis_chromatic": scan_chromatic["onaxis"],
-            "onaxis_fzp": scan_fzp["onaxis"],
-            "inmask_single": scan_single["inmask"],
-            "inmask_chromatic": scan_chromatic["inmask"],
-            "inmask_fzp": scan_fzp["inmask"],
-            "profiles_single": scan_single["profiles"],
-            "profiles_chromatic": scan_chromatic["profiles"],
-            "profiles_fzp": scan_fzp["profiles"],
-            "crosstalk_single": scan_single["crosstalk"],
-            "crosstalk_chromatic": scan_chromatic["crosstalk"],
-            "crosstalk_fzp": scan_fzp["crosstalk"],
-            "plane_idx": scan_single["plane_idx"],
-            "z_focus_single": scan_single["z_focus"],
-            "z_focus_chromatic": scan_chromatic["z_focus"],
-            "z_focus_fzp": scan_fzp["z_focus"],
-        },
-    )
-    console.file_saved(_LOG, f"{save_dir}/{SAVE_PREFIX}_results_{save_time}.npz")
+    results_payload = {
+        "lams": lams.detach().cpu().numpy(),
+        "weights": weights.detach().cpu().numpy(),
+        "energies_ev": energies_ev.detach().cpu().numpy(),
+        "z_dists": z_dists.detach().cpu().numpy(),
+        "z_last_per_wavelength": z_last_per_wavelength.detach().cpu().numpy(),
+        "z_eval": z_eval.detach().cpu().numpy(),
+        "fzp_theory_z": np.asarray(fzp_theory_z, dtype=np.float64),
+        "mask": focusing_mask.detach().cpu().numpy(),
+        "x_crop": x_crop.astype(np.float64),
+        "rho_bar_single": pack_binary_density(rho_single.detach().cpu().numpy()),
+        "rho_bar_chromatic": pack_binary_density(rho_chromatic.detach().cpu().numpy()),
+        "obj_list_single": np.asarray(obj_list_single, dtype=np.float32),
+        "obj_list_chromatic": np.asarray(obj_list_chromatic, dtype=np.float32),
+        "onaxis_single": scan_single["onaxis"],
+        "onaxis_chromatic": scan_chromatic["onaxis"],
+        "onaxis_fzp": scan_fzp["onaxis"],
+        "inmask_single": scan_single["inmask"],
+        "inmask_chromatic": scan_chromatic["inmask"],
+        "inmask_fzp": scan_fzp["inmask"],
+        "profiles_single": scan_single["profiles"],
+        "profiles_chromatic": scan_chromatic["profiles"],
+        "profiles_fzp": scan_fzp["profiles"],
+        "crosstalk_single": scan_single["crosstalk"],
+        "crosstalk_chromatic": scan_chromatic["crosstalk"],
+        "crosstalk_fzp": scan_fzp["crosstalk"],
+        "plane_idx": scan_single["plane_idx"],
+        "z_focus_single": scan_single["z_focus"],
+        "z_focus_chromatic": scan_chromatic["z_focus"],
+        "z_focus_fzp": scan_fzp["z_focus"],
+    }
+
+    console.banner(_LOG, "saving results")
+    params_ts = os.path.join(save_dir, f"{SAVE_PREFIX}_params_{save_time}.npy")
+    results_ts = os.path.join(save_dir, f"{SAVE_PREFIX}_results_{save_time}.npz")
+    params_stable = os.path.join(save_dir, f"{SAVE_PREFIX}_params.npy")
+    results_stable = os.path.join(save_dir, f"{SAVE_PREFIX}_results.npz")
+
+    np.save(params_ts, params_dict)
+    save_sweep_results(results_ts, results_payload)
+    shutil.copy2(params_ts, params_stable)
+    shutil.copy2(results_ts, results_stable)
+
+    console.file_saved(_LOG, results_ts)
+    console.file_saved(_LOG, results_stable)
     console.script_done(_LOG, script_start_time)
 
 
