@@ -1,6 +1,6 @@
 import torch # type: ignore
 import numpy as np # type: ignore
-from typing import Callable
+from typing import Callable, Sequence
 from .simparams import SimParams
 from .elements import ZonePlate
 import copy
@@ -97,3 +97,83 @@ def zp_init(
     zp_init = torch.where(zp_trans > 0.5, 1.0, 0.0).cpu().reshape(sim_params.Nx)[::n]
     zp_init = zp_init[:zp_init.shape[0]//2].numpy()
     return zp_init
+
+
+def _scalar_float(value) -> float:
+    if isinstance(value, torch.Tensor):
+        return float(value.detach().cpu().item())
+    return float(value)
+
+
+def fzp_cascade_half_profiles(
+    lam: float,
+    focal_lengths: Sequence[float],
+    min_feature_size: float,
+    sim_params: SimParams,
+    max_radius: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Build intermediate-field FZP half-profiles with coinciding foci.
+
+    Each plate ``i`` is a Fresnel zone plate designed for focal length
+    ``focal_lengths[i]`` (distance remaining to a common focus). The most
+    upstream plate is patterned out to ``max_radius``. Downstream radii follow
+    the first-order cone, ``R_i = max_radius * f_i / f_0``, as in
+    intermediate-field FZP stacks. Beyond ``R_i`` the half-profile is open
+    (0), i.e. membrane only.
+
+    Returns:
+        stacked: concatenated half-profiles, length ``N * (Nx / 2)``
+        focal_lengths: ``(N,)`` focal lengths used
+        radii_theory: ``(N,)`` unconstrained FZP radii ``λ f_i / (2 Δr_min)``
+        radii_used: ``(N,)`` cone-matched radii actually patterned
+    """
+    lam_f = _scalar_float(lam)
+    mfs = _scalar_float(min_feature_size)
+    dx = float(sim_params.dx)
+    n_half = int(sim_params.Nx) // 2
+    if max_radius is None:
+        max_radius = n_half * dx
+    else:
+        max_radius = float(max_radius)
+
+    if isinstance(lam, torch.Tensor):
+        lam_t = lam.to(device=sim_params.device)
+    else:
+        lam_t = torch.tensor(lam_f, dtype=sim_params.x.dtype, device=sim_params.device)
+
+    x_np = sim_params.x.detach().cpu().numpy()
+    r_half = np.abs(x_np[:n_half])
+
+    n_plates = len(focal_lengths)
+    profiles = []
+    f_arr = np.empty(n_plates, dtype=np.float64)
+    radii_theory = np.empty(n_plates, dtype=np.float64)
+    radii_used = np.empty(n_plates, dtype=np.float64)
+    for i, f_i in enumerate(focal_lengths):
+        f_i = _scalar_float(f_i)
+        f_arr[i] = f_i
+        radii_theory[i] = (lam_f * f_i) / (2.0 * mfs)
+
+    if n_plates:
+        f_upstream = float(f_arr[0])
+        if f_upstream <= 0.0:
+            raise ValueError("upstream focal length must be positive")
+
+    for i in range(n_plates):
+        r_cone = max_radius * (f_arr[i] / f_upstream)
+        r_used = min(r_cone, float(radii_theory[i]), max_radius)
+        radii_used[i] = r_used
+        profile = np.asarray(
+            zp_init(lam_t, f_arr[i], mfs, 1, sim_params),
+            dtype=np.float64,
+        ).reshape(-1)
+        if profile.shape[0] != n_half:
+            raise ValueError(
+                f"zp_init half-profile length {profile.shape[0]} != Nx/2 ({n_half})"
+            )
+        profile = profile.copy()
+        profile[r_half > r_used] = 0.0
+        profiles.append(profile)
+
+    stacked = np.concatenate(profiles, axis=0)
+    return stacked, f_arr, radii_theory, radii_used

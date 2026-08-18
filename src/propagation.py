@@ -16,6 +16,41 @@ _QDHT_L_GRID_CACHE: dict[
 ] = {}
 
 
+def _normalize_z_for_batch(
+    z: float | torch.Tensor,
+    batch_size: int,
+    real_dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor:
+    """Return a scalar ``()`` tensor or a length-``batch_size`` vector.
+
+    Existing callers pass a float or a 0-d / 1-element tensor. A 1-d tensor
+    with one entry per batch element (wavelength) is also accepted so a
+    single angular-spectrum call can send each wavelength to a different
+    plane. Other lengths raise.
+    """
+    if isinstance(z, float):
+        z_tensor = torch.tensor(z, dtype=real_dtype, device=device)
+    else:
+        z_tensor = z.to(dtype=real_dtype, device=device)
+    n = int(z_tensor.numel())
+    if n == 1:
+        return z_tensor.reshape(())
+    if n == batch_size:
+        return z_tensor.reshape(batch_size)
+    raise ValueError(
+        f"z must be a scalar or have {batch_size} entries (one per wavelength), "
+        f"got shape {tuple(z_tensor.shape)}"
+    )
+
+
+def _z_broadcast(z_tensor: torch.Tensor, extra_dims: int) -> torch.Tensor:
+    """Broadcast a scalar or (B,) z tensor to (B, 1, ..., 1)."""
+    if z_tensor.ndim == 0:
+        return z_tensor
+    return z_tensor.view(-1, *([1] * extra_dims))
+
+
 def _get_qdht_grid(
     N: int,
     R: float,
@@ -127,12 +162,7 @@ def qdht_propagation(
     real_dtype = complex_to_real_dtype(complex_dtype)
     lam = lam.to(dtype=real_dtype, device=device).reshape(batch)
 
-    if isinstance(z, float):
-        z_tensor = torch.tensor(z, dtype=real_dtype, device=device)
-    else:
-        z_tensor = z.to(dtype=real_dtype, device=device)
-        if z_tensor.numel() != 1:
-            raise ValueError(f"z must be a scalar (got shape {z_tensor.shape})")
+    z_tensor = _normalize_z_for_batch(z, batch, real_dtype, device)
 
     if pad:
         if padding < 1.0:
@@ -179,7 +209,8 @@ def qdht_propagation(
             spectrum = _apply_qdht_with_fixed_grid(u_qdht_in)
         k0 = 2 * pi / lam[b]
         kz = torch.sqrt((k0**2 - nu**2).to(torch.complex128))
-        propagated_spectrum = spectrum * torch.exp(1j * z_tensor * kz)
+        z_b = z_tensor if z_tensor.ndim == 0 else z_tensor[b]
+        propagated_spectrum = spectrum * torch.exp(1j * z_b * kz)
         if checkpoint_qdht and torch.is_grad_enabled() and propagated_spectrum.requires_grad:
             u_qdht_out = grad_checkpoint(_apply_qdht_with_fixed_grid, propagated_spectrum, use_reentrant=False)
         else:
@@ -331,12 +362,7 @@ def qdht_order_l_propagation(
     real_dtype = complex_to_real_dtype(complex_dtype)
     lam = lam.to(dtype=real_dtype, device=device).reshape(batch)
 
-    if isinstance(z, float):
-        z_tensor = torch.tensor(z, dtype=real_dtype, device=device)
-    else:
-        z_tensor = z.to(dtype=real_dtype, device=device)
-        if z_tensor.numel() != 1:
-            raise ValueError(f"z must be a scalar (got shape {z_tensor.shape})")
+    z_tensor = _normalize_z_for_batch(z, batch, real_dtype, device)
 
     if pad:
         if padding < 1.0:
@@ -378,7 +404,8 @@ def qdht_order_l_propagation(
 
         k0 = 2 * pi / lam[b]
         kz = torch.sqrt((k0**2 - nu**2).to(torch.complex128))
-        propagated = spectrum * torch.exp(1j * z_tensor * kz)
+        z_b = z_tensor if z_tensor.ndim == 0 else z_tensor[b]
+        propagated = spectrum * torch.exp(1j * z_b * kz)
 
         if checkpoint_qdht and torch.is_grad_enabled() and propagated.requires_grad:
             u_qdht_out = grad_checkpoint(_apply, propagated, use_reentrant=False)
@@ -412,8 +439,11 @@ def angular_spectrum_propagation(
     Args:
         U (torch.Tensor): Input field, shape (batch, Ny, Nx). Can be real or complex.
         lam (torch.Tensor): Wavelength for each field in the batch, shape (batch,).
-        z (float | torch.Tensor): Propagation distance. Can be a float or a scalar tensor
+        z (float | torch.Tensor): Propagation distance. A float or scalar tensor
+                                 sends every batch element the same distance
                                  (supports gradients for learnable distances).
+                                 A 1-d tensor of length ``batch`` sends each
+                                 wavelength to its own plane.
         dx (float): Pixel size.
         device (torch.device): The torch device to use for calculations.
         pad (bool): If True, zero‑pad the input field in the spatial dimensions
@@ -435,15 +465,8 @@ def angular_spectrum_propagation(
     real_dtype = complex_to_real_dtype(complex_dtype)
     # Ensure complex dtype
 
-    # Convert z to tensor if it's a float, preserving gradients if it's already a tensor
-    if isinstance(z, float):
-        z_tensor = torch.tensor(z, dtype=real_dtype, device=device)
-    else:
-        # z is already a tensor, ensure it's on the right device and dtype
-        z_tensor = z.to(dtype=real_dtype, device=device)
-        # Ensure z is a scalar tensor
-        if z_tensor.numel() != 1:
-            raise ValueError(f"z must be a scalar (got shape {z_tensor.shape})")
+    # Convert z to a scalar or per-wavelength vector.
+    z_tensor = _normalize_z_for_batch(z, U.shape[0], real_dtype, device)
 
     # Store original dimensions before padding
     Ny_original, Nx_original = U.shape[-2], U.shape[-1]
@@ -474,7 +497,7 @@ def angular_spectrum_propagation(
         KY, KX = torch.meshgrid(ky, kx, indexing='ij')
 
         kz = torch.sqrt((k0**2 - (KX**2 + KY**2).to(real_dtype)).to(complex_dtype))  # (batch,Ny,Nx)
-        H = torch.exp(1j * z_tensor * kz)
+        H = torch.exp(1j * _z_broadcast(z_tensor, 2) * kz)
 
         U_fourier = torch.fft.fft(U_padded, dim=-1)
         U_fourier = U_fourier * H
@@ -498,7 +521,7 @@ def angular_spectrum_propagation(
             # broadcast to (B, Nx) only, not (B, Ny, Nx)
             inside = (k0_sq[:, None] - kxy2_row[None, :]).to(complex_dtype)
             kz_row = torch.sqrt(inside)                     # (B, Nx)
-            phase_row = torch.exp(1j * z_tensor * kz_row)   # (B, Nx)
+            phase_row = torch.exp(1j * _z_broadcast(z_tensor, 1) * kz_row)   # (B, Nx)
             U_fourier[:, iy, :] *= phase_row
 
         del kxy2_row, inside, kz_row, phase_row
@@ -527,27 +550,31 @@ def propagate_z(
 
     Args:
         U (torch.Tensor): Input field, shape (num_wavelengths, Ny, Nx).
-        z (float | torch.Tensor): Propagation distance. Can be a float or a scalar tensor
-                                 (supports gradients for learnable distances).
+        z (float | torch.Tensor): Propagation distance. Scalar (all wavelengths
+                                 the same distance) or length-``num_wavelengths``
+                                 (one last-hop distance per wavelength).
         sim_params (SimParams): Object containing simulation parameters like
                                 wavelengths, pixel size, and device.
 
     Returns:
         torch.Tensor: The propagated complex field, shape (num_wavelengths, Ny, Nx).
     """
+    n_wvl = U.shape[0]
+    z_is_per_wavelength = torch.is_tensor(z) and int(z.numel()) == n_wvl
     # The for-loop is replaced with a single, batched call to the
     # modified angular_spectrum_propagation function. The first dimension of U
     # (num_wavelengths) is treated as the batch dimension.
     if sequential_wavelengths:
         U_parts = []
-        for w in range(U.shape[0]):
+        for w in range(n_wvl):
             U_w = U[w : w + 1]
             lam_w = sim_params.lams[w : w + 1]
+            z_w = z.reshape(n_wvl)[w] if z_is_per_wavelength else z
             if method == "angular":
                 Uz_w = angular_spectrum_propagation(
                     U_w,
                     lam_w,
-                    z,
+                    z_w,
                     sim_params.dx,
                     sim_params.device,
                     pad,
@@ -557,7 +584,7 @@ def propagate_z(
                 Uz_w = qdht_propagation(
                     U_w,
                     lam_w,
-                    z,
+                    z_w,
                     sim_params.dx,
                     sim_params.device,
                     pad=pad,

@@ -10,7 +10,7 @@ BINARY_DENSITY_DTYPE = np.bool_
 INTENSITY_DTYPE = np.float32
 
 # Explicit element-density keys in sweep/experiment ``.npz`` outputs.
-BINARY_DENSITY_KEYS = frozenset({"opt_rhos", "rho_bar", "rho_bar_run2"})
+BINARY_DENSITY_KEYS = frozenset({"opt_rhos", "rho_bar", "rho_bar_run2", "fzp_cascade_rhos"})
 
 # Minimal fields needed by fig1 notebooks and robustness postprocess scripts.
 FIG1_N_SWEEPS_SAVE_KEYS = (

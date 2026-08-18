@@ -132,6 +132,39 @@ def gaussian_energy_spectrum(
     )
 
 
+H_EV_S = 4.135667696e-15
+C_M_S = 299792458.0
+HC_EV_M = H_EV_S * C_M_S
+
+
+def wavelengths_to_energy_ev(lams: torch.Tensor | np.ndarray) -> torch.Tensor | np.ndarray:
+    """Convert wavelength (m) to photon energy (eV)."""
+    if isinstance(lams, torch.Tensor):
+        return HC_EV_M / lams
+    return HC_EV_M / np.asarray(lams)
+
+
+def linear_energy_focal_shift(
+    lams: torch.Tensor,
+    f: float,
+    half_width: float,
+) -> torch.Tensor:
+    """Map sampled wavelengths onto last-hop distances linear in energy.
+
+    Lowest energy (longest wavelength) is sent to ``f - half_width`` and
+    highest energy to ``f + half_width``, matching the sign of FZP chromatic
+    walk (``f ∝ E``). A single wavelength maps to ``f``.
+    """
+    energies = wavelengths_to_energy_ev(lams)
+    if energies.numel() == 1:
+        return torch.full_like(energies, float(f), dtype=torch.float64)
+    e_min = torch.min(energies)
+    e_max = torch.max(energies)
+    t = (energies - e_min) / (e_max - e_min)
+    z = float(f) + float(half_width) * (2.0 * t - 1.0)
+    return z.to(dtype=torch.float64)
+
+
 def create_material_map(
         material_name: str, 
 ) -> list[np.ndarray]:

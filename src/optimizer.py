@@ -15,8 +15,8 @@ class TopologyOptimizerTorch(torch.nn.Module):
         
         Args:
             n_elements: Number of design variables
-            filter_radius: Radius for density filtering (in grid units)
-            mesh_resolution: Grid spacing for filtering
+            filter_radius: Minimum feature width in pixels (min_feature_size / dx)
+            mesh_resolution: Grid spacing for the density-filter kernel (pixel units)
             epsilon: Tolerance for constraint violation
             constraint_fac: Scaling factor for constraints
             P: P-norm exponent for constraint aggregation
@@ -54,24 +54,17 @@ class TopologyOptimizerTorch(torch.nn.Module):
         self.constraint_aggregation = constraint_aggregation
         self.morph_agg_beta = morph_agg_beta
         
-        # Morphological kernel size based on filter radius
-        # This determines the minimum feature size that will be preserved
-        self.morph_kernel_size = max(3, 2 * int(self.r) + 1)
+        # Morphological SE width in pixels: this is the minimum feature size.
+        # Round to the nearest odd integer so 1D opening/closing has a
+        # well-defined center (e.g. 50 nm at dx=10 nm -> 5 pixels).
+        n_mfs = max(1, int(round(self.r / self.h)))
+        self.morph_kernel_size = max(3, n_mfs if n_mfs % 2 == 1 else n_mfs + 1)
 
-        # FIX: Ensure kernel size is ODD and grid-aligned
-        # 1. Determine how many neighbor nodes fall within radius r
-        #    We use int() (floor) because neighbors beyond r have 0 weight anyway.
-        neighbor_count = int(self.r / self.h)
-        
-        # 2. Force kernel size to be odd (center + left neighbors + right neighbors)
-        kernel_size = 2 * neighbor_count + 1
-        
-        # 3. Generate coordinates at exact grid points: 0, +/- h, +/- 2h ...
-        #    (Do not use linspace(-r, r), that misaligns the grid!)
+        # Density filter is a short smoother only. A filter radius comparable
+        # to the morph kernel stacks with it and inflates the realized floor.
+        neighbor_count = max(1, self.morph_kernel_size // 4)
         grid_indices = torch.arange(-neighbor_count, neighbor_count + 1, dtype=torch.float64)
         x_coords = grid_indices * self.h
-        
-        # 4. Compute weights
         kernel_weights = F.relu(self.r - torch.abs(x_coords))
         self.kernel = kernel_weights / kernel_weights.sum()
         
@@ -488,8 +481,9 @@ def run_torch_optimization(sim_params, opt_params, args, objective_function=None
     if objective_function is None:
         objective_function = forward_model_N_elements_mask
     n_elements = int(sim_params.Nx // 2 * opt_params["Nelem"])
-    R = opt_params["min_feature_size"] / sim_params.dx 
-    h = 0.5
+    n_mfs = max(1, int(round(opt_params["min_feature_size"] / sim_params.dx)))
+    R = float(n_mfs)
+    h = 1.0
     epsilon = opt_params["epsilon"] 
     tolerance = opt_params["tolerance"]
     param_tolerance = opt_params["param_tolerance"]
@@ -533,7 +527,8 @@ def run_torch_optimization(sim_params, opt_params, args, objective_function=None
         _LOG,
         (
             f"starting topology optimization: Nelem={n_opt_elements}, "
-            f"n_design_vars={model.n}, filter_radius={R:.3g}, "
+            f"n_design_vars={model.n}, min_feature_px={R:.3g}, "
+            f"morph_kernel={model.morph_kernel_size}, "
             f"beta_schedule={beta_values}, min_beta={min_beta}, max_eval={max_eval}"
         ),
     )
