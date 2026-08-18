@@ -16,6 +16,8 @@ def propagate_arbg_N_elements(
     propagation_padding: float = 2.0,
     propagation_sequential_wavelengths: bool = False,
     propagation_checkpoint_qdht: bool = True,
+    z_last_per_wavelength: torch.Tensor | None = None,
+    stop_before_last_hop: bool = False,
     ) -> torch.Tensor:
     """
     Apply N elements with N propagation distances between them.
@@ -26,16 +28,34 @@ def propagate_arbg_N_elements(
         elements: Tuple of N ArbitraryElement objects
         z_distances: 1D tensor of N distances after each element
                     (supports gradients for learnable distances)
+        z_last_per_wavelength: Optional length-``num_wavelengths`` tensor that
+                    overrides ``z_distances[-1]`` so each wavelength can be
+                    sent to a different plane. Inter-element gaps stay shared.
+        stop_before_last_hop: If True, apply the last element and return the
+                    field at that plane without the final free-space hop
+                    (used for axial z-scans).
     """
     if len(elements) != z_distances.shape[0]:
         raise ValueError(f"Number of elements ({len(elements)}) must match number of z distances ({z_distances.shape[0]})")
+    if z_last_per_wavelength is not None:
+        n_wvl = int(sim_params.weights.shape[0])
+        if int(z_last_per_wavelength.numel()) != n_wvl:
+            raise ValueError(
+                f"z_last_per_wavelength must have {n_wvl} entries, "
+                f"got shape {tuple(z_last_per_wavelength.shape)}"
+            )
     
+    n = len(elements)
     current_U = U
-    for element, z in zip(elements, z_distances):
+    for i, (element, z) in enumerate(zip(elements, z_distances)):
         current_U = element.apply_element(current_U, sim_params)
+        is_last = i == n - 1
+        if is_last and stop_before_last_hop:
+            break
+        z_hop = z_last_per_wavelength if (is_last and z_last_per_wavelength is not None) else z
         current_U = propagate_z(
             current_U,
-            z,
+            z_hop,
             sim_params,
             method=propagation_method,
             pad=True,
@@ -57,6 +77,8 @@ def field_arbg_N_elements(
     propagation_padding: float = 2.0,
     propagation_sequential_wavelengths: bool = False,
     propagation_checkpoint_qdht: bool = True,
+    z_last_per_wavelength: torch.Tensor | None = None,
+    stop_before_last_hop: bool = False,
     ) -> torch.Tensor:
     """
     Apply N arbitrary elements to a plane wave with N propagation distances.
@@ -69,6 +91,8 @@ def field_arbg_N_elements(
                     (supports gradients for learnable distances)
         center_offsets: Tuple of N (x, y) tuples defining the center offset for each element.
                        Defaults to all zeros for backwards compatibility.
+        z_last_per_wavelength: Optional per-wavelength override of the last hop.
+        stop_before_last_hop: If True, return the field just after the last element.
     """
     if len(x) != z_distances.shape[0]:
         raise ValueError(f"Number of x tensors ({len(x)}) must match number of z distances ({z_distances.shape[0]})")
@@ -104,6 +128,8 @@ def field_arbg_N_elements(
         propagation_padding=propagation_padding,
         propagation_sequential_wavelengths=propagation_sequential_wavelengths,
         propagation_checkpoint_qdht=propagation_checkpoint_qdht,
+        z_last_per_wavelength=z_last_per_wavelength,
+        stop_before_last_hop=stop_before_last_hop,
     )
 
 
@@ -170,6 +196,240 @@ def forward_model_N_elements_mask(
         obj = torch.sum(I_out * mask)
 
     return obj, I_out
+
+
+def _propagation_options(elem_params: dict) -> tuple[str, float, bool, bool]:
+    propagation_method = elem_params.get("propagation_method", "angular")
+    if "propagation_padding" in elem_params:
+        propagation_padding = float(elem_params["propagation_padding"])
+    else:
+        propagation_padding = 2.0 if propagation_method == "qdht" else 2.0
+    if "propagation_sequential_wavelengths" in elem_params:
+        propagation_sequential_wavelengths = bool(elem_params["propagation_sequential_wavelengths"])
+    else:
+        propagation_sequential_wavelengths = propagation_method == "qdht"
+    if "propagation_checkpoint_qdht" in elem_params:
+        propagation_checkpoint_qdht = bool(elem_params["propagation_checkpoint_qdht"])
+    else:
+        propagation_checkpoint_qdht = True
+    return (
+        propagation_method,
+        propagation_padding,
+        propagation_sequential_wavelengths,
+        propagation_checkpoint_qdht,
+    )
+
+
+def _split_symmetric_design(x: torch.Tensor, n_elements: int) -> list[torch.Tensor]:
+    if x.shape[0] % n_elements != 0:
+        raise ValueError(
+            f"Parameter vector length ({x.shape[0]}) must be divisible by "
+            f"number of elements ({n_elements})"
+        )
+    x_part_size = x.shape[0] // n_elements
+    x_opt_parts = []
+    for i in range(n_elements):
+        x_part = x[i * x_part_size : (i + 1) * x_part_size]
+        x_part_dbl = torch.cat((x_part, torch.flip(x_part, dims=(0,)))).view(1, -1)
+        x_opt_parts.append(x_part_dbl)
+    return x_opt_parts
+
+
+def forward_model_N_elements_mask_chromatic(
+    x: torch.Tensor,
+    sim_params: SimParams,
+    elem_params: dict,
+    mask: torch.Tensor,
+    z_distances: torch.Tensor,
+    center_offsets: tuple[tuple[float, float], ...] | None = None,
+    z_last_per_wavelength: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Intensity-mask objective with a per-wavelength last-hop distance.
+
+    Same optical stack as ``forward_model_N_elements_mask`` (shared geometry
+    and inter-element gaps) except the final free-space hop can send each
+    wavelength to its own plane. The scalar objective is
+
+        sum_λ w_λ  ⟨ I_λ(x, z_λ), mask(x) ⟩
+
+    so the optimizer can prescribe axial chromatic aberration (or flatten it
+    by setting every ``z_λ`` equal to the same focal length).
+
+    Args:
+        x: Concatenated half-profiles, length ``N * Nx / 2``.
+        sim_params: Multi-wavelength simulation parameters.
+        elem_params: Element / propagation parameters.
+        mask: Spatial focusing mask, broadcast over wavelengths.
+        z_distances: Length-N tensor of inter-element gaps plus a placeholder
+            last hop (used when ``z_last_per_wavelength`` is None).
+        center_offsets: Optional per-element (x, y) offsets.
+        z_last_per_wavelength: Optional length-``N_λ`` tensor of last-hop
+            distances. Overrides ``z_distances[-1]``.
+
+    Returns:
+        obj: Weighted sum of per-wavelength mask overlaps.
+        I_out: Spectrally weighted intensity, each color taken at its own
+            plane, shape ``(Nx,)``.
+    """
+    N = z_distances.shape[0]
+    if center_offsets is None:
+        center_offsets = tuple((0.0, 0.0) for _ in range(N))
+    x_opt_parts = _split_symmetric_design(x, N)
+    (
+        propagation_method,
+        propagation_padding,
+        propagation_sequential_wavelengths,
+        propagation_checkpoint_qdht,
+    ) = _propagation_options(elem_params)
+
+    U_opt = field_arbg_N_elements(
+        x=x_opt_parts,
+        sim_params=sim_params,
+        elem_params=elem_params,
+        z_distances=z_distances,
+        center_offsets=center_offsets,
+        propagation_method=propagation_method,
+        propagation_padding=propagation_padding,
+        propagation_sequential_wavelengths=propagation_sequential_wavelengths,
+        propagation_checkpoint_qdht=propagation_checkpoint_qdht,
+        z_last_per_wavelength=z_last_per_wavelength,
+    )
+
+    I_lambda = (U_opt.abs() ** 2).reshape(len(sim_params.weights), sim_params.Nx)
+    mask_flat = mask.reshape(sim_params.Nx)
+    weights = sim_params.weights.to(dtype=I_lambda.dtype)
+
+    radial_objective = bool(elem_params.get("radial_objective", False))
+    if radial_objective:
+        r_weights = torch.abs(sim_params.x).reshape(sim_params.Nx)
+        spatial = mask_flat * r_weights
+    else:
+        spatial = mask_flat
+    per_lam_obj = torch.sum(I_lambda * spatial.view(1, -1), dim=-1)
+    obj = torch.sum(per_lam_obj * weights)
+    I_out = torch.sum(I_lambda * weights.view(-1, 1), dim=0)
+    return obj, I_out
+
+
+def scan_cascade_intensity_z(
+    x: torch.Tensor,
+    sim_params: SimParams,
+    elem_params: dict,
+    z_distances: torch.Tensor,
+    z_eval: torch.Tensor,
+    mask: torch.Tensor | None = None,
+    center_offsets: tuple[tuple[float, float], ...] | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Axial scan of per-wavelength intensity after a fixed cascade.
+
+    Propagates through all elements once, then only the last free-space hop
+    is repeated over ``z_eval``. Existing forward models are unchanged.
+
+    Args:
+        x: Concatenated half-profiles, same layout as the 1D forward models.
+        z_distances: Length-N tensor; only ``z_distances[:-1]`` are used as
+            inter-element gaps. ``z_distances[-1]`` is ignored.
+        z_eval: 1D tensor of last-hop distances, shape ``(Nz,)``.
+        mask: Optional focusing mask used to accumulate in-mask power.
+
+    Returns:
+        I_lambda: Intensity of shape ``(N_λ, Nz, Nx)``.
+        onaxis: On-axis intensity of shape ``(N_λ, Nz)``.
+        inmask: In-mask power of shape ``(N_λ, Nz)``. Zeros if ``mask`` is None.
+    """
+    N = z_distances.shape[0]
+    if center_offsets is None:
+        center_offsets = tuple((0.0, 0.0) for _ in range(N))
+    x_opt_parts = _split_symmetric_design(x, N)
+    (
+        propagation_method,
+        propagation_padding,
+        propagation_sequential_wavelengths,
+        propagation_checkpoint_qdht,
+    ) = _propagation_options(elem_params)
+
+    U_at_last = field_arbg_N_elements(
+        x=x_opt_parts,
+        sim_params=sim_params,
+        elem_params=elem_params,
+        z_distances=z_distances,
+        center_offsets=center_offsets,
+        propagation_method=propagation_method,
+        propagation_padding=propagation_padding,
+        propagation_sequential_wavelengths=propagation_sequential_wavelengths,
+        propagation_checkpoint_qdht=propagation_checkpoint_qdht,
+        stop_before_last_hop=True,
+    )
+
+    n_wvl = int(sim_params.weights.shape[0])
+    n_z = int(z_eval.shape[0])
+    nx = int(sim_params.Nx)
+    real_dtype = complex_to_real_dtype(sim_params.dtype)
+    I_lambda = torch.empty((n_wvl, n_z, nx), dtype=real_dtype, device=sim_params.device)
+    center_idx = nx // 2
+    mask_flat = None if mask is None else mask.reshape(nx).to(dtype=real_dtype)
+
+    for iz in range(n_z):
+        U_z = propagate_z(
+            U_at_last,
+            z_eval[iz],
+            sim_params,
+            method=propagation_method,
+            pad=True,
+            padding=propagation_padding,
+            sequential_wavelengths=propagation_sequential_wavelengths,
+            checkpoint_qdht=propagation_checkpoint_qdht,
+        )
+        I_z = (U_z.abs() ** 2).reshape(n_wvl, nx)
+        I_lambda[:, iz, :] = I_z
+
+    onaxis = I_lambda[:, :, center_idx]
+    if mask_flat is None:
+        inmask = torch.zeros((n_wvl, n_z), dtype=real_dtype, device=sim_params.device)
+    else:
+        inmask = torch.sum(I_lambda * mask_flat.view(1, 1, nx), dim=-1)
+    return I_lambda, onaxis, inmask
+
+
+def cascade_per_wavelength_intensity(
+    x: torch.Tensor,
+    sim_params: SimParams,
+    elem_params: dict,
+    z_distances: torch.Tensor,
+    center_offsets: tuple[tuple[float, float], ...] | None = None,
+    z_last_per_wavelength: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Per-wavelength intensity after the cascade, shape ``(N_λ, Nx)``.
+
+    If ``z_last_per_wavelength`` is set, each color is evaluated at its own
+    last-hop distance; otherwise every color uses ``z_distances[-1]``.
+    """
+    N = z_distances.shape[0]
+    if center_offsets is None:
+        center_offsets = tuple((0.0, 0.0) for _ in range(N))
+    x_opt_parts = _split_symmetric_design(x, N)
+    (
+        propagation_method,
+        propagation_padding,
+        propagation_sequential_wavelengths,
+        propagation_checkpoint_qdht,
+    ) = _propagation_options(elem_params)
+    U_opt = field_arbg_N_elements(
+        x=x_opt_parts,
+        sim_params=sim_params,
+        elem_params=elem_params,
+        z_distances=z_distances,
+        center_offsets=center_offsets,
+        propagation_method=propagation_method,
+        propagation_padding=propagation_padding,
+        propagation_sequential_wavelengths=propagation_sequential_wavelengths,
+        propagation_checkpoint_qdht=propagation_checkpoint_qdht,
+        z_last_per_wavelength=z_last_per_wavelength,
+    )
+    return (U_opt.abs() ** 2).reshape(len(sim_params.weights), sim_params.Nx)
 
 
 def forward_model_N_elements_mask_partial_coherence(
