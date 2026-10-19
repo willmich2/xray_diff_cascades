@@ -6,6 +6,9 @@ SAVE_PREFIX = "fig2a_bandwidth_energy_sweep"
 SAVE_DIR = None
 N_RUNS = 1
 SAVE_RUN_SUFFIX = False
+PARAM_OVERRIDES = {
+    "efficiency_normalization": "active_device_area",
+}
 SWEEP_AXES = {
     "bandwidths": np.logspace(-5, -1.8, 30),
     "energies": np.linspace(5e3, 27e3, 30),

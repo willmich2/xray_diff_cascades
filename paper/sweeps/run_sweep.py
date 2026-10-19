@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from paper.sweeps.studies import iter_studies, resolve_study
+from paper.reproduce import iter_studies, resolve_study
 from paper.sweeps.sweep_framework import SweepRuntimeConfig, run_sweep
 from src import console
 
@@ -33,6 +33,7 @@ def main() -> None:
     parser.add_argument("--workers-per-gpu", type=int, default=2)
     parser.add_argument("--n-runs", type=int, default=None)
     parser.add_argument("--save-dir", default=None)
+    parser.add_argument("--timestamp-outputs", action="store_true", help="Write timestamped files instead of the bundled names.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -64,6 +65,7 @@ def main() -> None:
         n_runs=args.n_runs,
         save_dir=args.save_dir,
         dry_run=args.dry_run,
+        timestamp_outputs=args.timestamp_outputs,
     )
     run_sweep(runtime)
     console.script_done("run_sweep", start)

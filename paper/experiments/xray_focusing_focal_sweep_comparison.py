@@ -16,14 +16,14 @@ from src.util import get_formatted_datetime  # type: ignore
 from src.simparams import SimParams
 from src.forwardmodels import (
     forward_model_N_elements_mask_multi_z,
-    forward_model_N_elements_mask,
-    forward_model_N_elements_mask_2d,
+    forward_model_N_elements_mask_2d_coherent_qdht,
 )
 from src.inversedesign_utils import zp_init
 from src.optimizer import run_torch_optimization
 from src import console
 
 _LOG = "focal_sweep_comparison"
+from paper.data_paths import DEFAULT_DATA_DIR, dataset_path, output_timestamp
 from paper.sweeps.density_io import save_sweep_results
 from paper.sweeps.standard_params import (
     MATERIAL_DEFAULT,
@@ -207,8 +207,8 @@ if __name__ == "__main__":
     script_start_time = console.script_start(_LOG)
     console.kv(_LOG, "Nelem", Nelem)
     console.kv(_LOG, "n_sweep_tensors", n_sweep_tensors)
-    save_time = get_formatted_datetime()
-    save_dir = os.environ.get("DIFFRACTIVE_CASCADES_DATA_DIR", "outputs")
+    save_time = output_timestamp(get_formatted_datetime())
+    save_dir = DEFAULT_DATA_DIR
     os.makedirs(save_dir, exist_ok=True)
 
     # ----- Run 1: single z at focal length -----
@@ -229,8 +229,9 @@ if __name__ == "__main__":
     rho_tilde_run1, _ = model_run1.filter_density(x_tensor_run1)
     rho_bar_run1 = (rho_tilde_run1 > 0.5).to(dtype=torch.float64)
 
-    # Evaluate optimized design and FZP baseline at the focal plane using the
-    # shared 2D helper with a single-z adapter around the multi-z forward model.
+    # Evaluate optimized design and FZP baseline at the focal plane.
+    # propagation_method stays at the angular default, so the helper calls the
+    # order-0 QDHT model rather than the 1D adapter.
     fwd_model_args_run1_eval = (elem_params, focusing_mask, z_single, center_offsets)
     metrics_run1 = compute_opt_and_fzp_metrics_2d(
         rho_bar_run1,
@@ -240,7 +241,7 @@ if __name__ == "__main__":
         focusing_threshold=focusing_threshold,
         crop_width=int(crop_width),
         forward_model_1d=forward_model_multi_z_single_plane,
-        forward_model_2d=forward_model_N_elements_mask_2d,
+        forward_model_2d=forward_model_N_elements_mask_2d_coherent_qdht,
         zp_init_func=zp_init_fixed_design,
     )
 
@@ -281,7 +282,7 @@ if __name__ == "__main__":
         focusing_threshold=focusing_threshold,
         crop_width=int(crop_width),
         forward_model_1d=forward_model_multi_z_single_plane,
-        forward_model_2d=forward_model_N_elements_mask_2d,
+        forward_model_2d=forward_model_N_elements_mask_2d_coherent_qdht,
         zp_init_func=zp_init_fixed_design,
         compute_fzp=False,
     )
@@ -334,7 +335,7 @@ if __name__ == "__main__":
             focusing_threshold=focusing_threshold,
             crop_width=int(crop_width),
             forward_model_1d=forward_model_multi_z_single_plane,
-            forward_model_2d=forward_model_N_elements_mask_2d,
+            forward_model_2d=forward_model_N_elements_mask_2d_coherent_qdht,
             zp_init_func=zp_init_fixed_design,
         )
         zp_center_row = metrics_z_run1["fzp_intensity_1d"]
@@ -352,7 +353,7 @@ if __name__ == "__main__":
             focusing_threshold=focusing_threshold,
             crop_width=int(crop_width),
             forward_model_1d=forward_model_multi_z_single_plane,
-            forward_model_2d=forward_model_N_elements_mask_2d,
+            forward_model_2d=forward_model_N_elements_mask_2d_coherent_qdht,
             zp_init_func=zp_init_fixed_design,
             compute_fzp=False,
         )
@@ -380,6 +381,7 @@ if __name__ == "__main__":
         "run2_description": f"{n_sweep_tensors} z tensors, last entry sweep around f, equal weights, same mask",
         "optimizer": "run_torch_optimization",
         "forward_model": "forward_model_N_elements_mask_multi_z",
+        "metric_model_2d": "coherent_2d_qdht",
         "opt_params": {
             "epsilon": float(epsilon),
             "tolerance": float(tolerance),
@@ -394,7 +396,7 @@ if __name__ == "__main__":
             "morph_agg_beta": float(morph_agg_beta),
         },
     }
-    np.save(f"{save_dir}/fig4b_xray_focusing_focal_sweep_comparison_params_{save_time}.npy", params_dict)
+    np.save(dataset_path(save_dir, "fig4b_xray_focusing_focal_sweep_comparison", "params", timestamp=save_time), params_dict)
 
     # ----- Save results -----
     z_distances_run1_np = z_single.cpu().numpy()
@@ -402,7 +404,7 @@ if __name__ == "__main__":
     mask_save = focusing_mask.cpu().numpy()
 
     save_sweep_results(
-        f"{save_dir}/fig4b_xray_focusing_focal_sweep_comparison_results_{save_time}.npz",
+        dataset_path(save_dir, "fig4b_xray_focusing_focal_sweep_comparison", "results", timestamp=save_time),
         {
             "opt_intensity": opt_intensity_run1_center,
             "opt_efficiency": float(opt_efficiency_run1),
@@ -428,5 +430,5 @@ if __name__ == "__main__":
         },
     )
 
-    console.file_saved(_LOG, f"{save_dir}/fig4b_xray_focusing_focal_sweep_comparison_results_{save_time}.npz")
+    console.file_saved(_LOG, dataset_path(save_dir, "fig4b_xray_focusing_focal_sweep_comparison", "results", timestamp=save_time))
     console.script_done(_LOG, script_start_time)

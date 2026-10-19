@@ -2,10 +2,13 @@ import numpy as np
 
 from paper.sweeps.standard_params import NX_DEFAULT
 
-SAVE_PREFIX = "figA3a_focal_length_sweeps"
+SAVE_PREFIX = "figS3a_focal_length_sweeps"
 SAVE_DIR = None
 N_RUNS = 1
 SAVE_RUN_SUFFIX = True
+PARAM_OVERRIDES = {
+    "efficiency_normalization": "active_device_area",
+}
 SWEEP_AXES = {
     "Nelems": np.array([5, 10, 20, 40], dtype=int),
     "focal_lengths": np.logspace(-3, -0.5, 8),

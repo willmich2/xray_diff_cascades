@@ -20,7 +20,7 @@ from src.util import (  # type: ignore
 from src.simparams import SimParams  # type: ignore
 from src.forwardmodels import forward_model_N_elements_mask_2d  # type: ignore
 from src.inversedesign_utils import zp_init  # type: ignore
-from paper.postprocess.fig1_inputs import (
+from paper.data_paths import (
     DEFAULT_BASE_SWEEP_ID,
     DEFAULT_DATA_DIR,
     output_id_label,
@@ -336,7 +336,7 @@ if __name__ == "__main__":
     save_time = get_formatted_datetime()
     save_path = str(
         robustness_results_path(
-            args.data_dir, "figA4b_sidewall_robustness_results", args.base_id, save_time
+            args.data_dir, "figS4b_sidewall_robustness_results", args.base_id, save_time
         )
     )
     np.savez(

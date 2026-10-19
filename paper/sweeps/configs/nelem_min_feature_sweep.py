@@ -5,6 +5,9 @@ from paper.sweeps.standard_params import NX_DEFAULT
 SAVE_PREFIX = "fig2b_Nelem_min_feature_sweep"
 SAVE_DIR = None
 N_RUNS = 3
+PARAM_OVERRIDES = {
+    "efficiency_normalization": "active_device_area",
+}
 SWEEP_AXES = {
     "Nelem": np.array([5, 10, 20, 40], dtype=int),
     "min_feature_size": np.linspace(10e-9, 200e-9, 10, dtype=float),

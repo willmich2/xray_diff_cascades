@@ -151,6 +151,7 @@ def fzp_cascade_vs_opt_worker(task: dict[str, Any]) -> dict[str, Any]:
         forward_model_2d=metric_2d,
         zp_init_func=zp_init,
         compute_fzp=False,
+        efficiency_normalization=str(params.get("efficiency_normalization", "full_pupil")),
     )
     opt_metrics = compute_opt_and_fzp_metrics_2d(
         rho_bar,
@@ -168,11 +169,18 @@ def fzp_cascade_vs_opt_worker(task: dict[str, Any]) -> dict[str, Any]:
         sim_params,
         max_radius=r_max,
     )
+    fzp_cascade_active_radius_pixels = float(_r_used[0] / dx)
+    normalize_to_active_area = (
+        str(params.get("efficiency_normalization", "full_pupil")) == "active_device_area"
+    )
     fzp_cascade_x = torch.tensor(fzp_cascade_np, dtype=torch.float64, device=device)
     cascade_metrics = compute_opt_and_fzp_metrics_2d(
         fzp_cascade_x,
         sim_params,
         fzp_fwd_model_args,
+        design_normalization_radius_pixels=(
+            fzp_cascade_active_radius_pixels if normalize_to_active_area else None
+        ),
         **metric_kwargs,
     )
 
@@ -205,11 +213,13 @@ def fzp_cascade_vs_opt_worker(task: dict[str, Any]) -> dict[str, Any]:
             "obj_list": obj_np,
             "opt_obj": float(opt_metrics["opt_final_obj"]),
             "opt_eff": float(opt_metrics["opt_efficiency"]),
+            "opt_active_radius_pixels": float(opt_metrics["opt_active_radius_pixels"]),
             "opt_width": float(opt_metrics["opt_width"]),
             "opt_gain": float(opt_gain),
             "opt_intensity": np.asarray(opt_metrics["opt_intensity_1d"], dtype=INTENSITY_DTYPE),
             "fzp_obj": float(cascade_metrics["opt_final_obj"]),
             "fzp_eff": float(cascade_metrics["opt_efficiency"]),
+            "fzp_active_radius_pixels": float(cascade_metrics["opt_active_radius_pixels"]),
             "fzp_width": float(cascade_metrics["opt_width"]),
             "fzp_gain": float(fzp_gain),
             "fzp_intensity": np.asarray(cascade_metrics["opt_intensity_1d"], dtype=INTENSITY_DTYPE),

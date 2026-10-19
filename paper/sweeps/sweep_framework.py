@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from paper.data_paths import DEFAULT_DATA_DIR, dataset_path, output_timestamp
 from paper.sweeps.density_io import (
     INTENSITY_DTYPE,
     compute_fill_factors,
@@ -154,13 +155,15 @@ def _build_opt_params_template(params: dict[str, Any]) -> dict[str, Any]:
 def _prepare_params_for_save(base_params: dict[str, Any], config: dict[str, Any], axes: dict[str, Any]) -> dict[str, Any]:
     params_for_save = copy.deepcopy(base_params)
     params_for_save.update(config.get("PARAM_OVERRIDES", {}))
-    params_for_save["axes"] = {k: np.asarray(v) for k, v in axes.items()}
-    for axis_name, axis_values in axes.items():
-        params_for_save[axis_name] = np.asarray(axis_values)
     params_for_save["optimizer"] = "run_torch_optimization"
+    # Build the scalar optimizer template before sweep axes overwrite matching keys
+    # (e.g. Nelem) with arrays.
     params_for_save["opt_params_template"] = _build_opt_params_template(params_for_save)
     if "focal_lengths" in axes and "f_default" not in params_for_save:
         params_for_save["f_default"] = float(params_for_save["f"])
+    params_for_save["axes"] = {k: np.asarray(v) for k, v in axes.items()}
+    for axis_name, axis_values in axes.items():
+        params_for_save[axis_name] = np.asarray(axis_values)
     return params_for_save
 
 
@@ -172,6 +175,7 @@ class SweepRuntimeConfig:
     n_runs: int | None = None
     save_dir: str | None = None
     dry_run: bool = False
+    timestamp_outputs: bool = False
 
 
 def _default_worker(task: dict[str, Any]) -> dict[str, Any]:
@@ -285,6 +289,7 @@ def _default_worker(task: dict[str, Any]) -> dict[str, Any]:
         forward_model_1d=metric_1d,
         forward_model_2d=metric_2d,
         zp_init_func=zp_init,
+        efficiency_normalization=str(params.get("efficiency_normalization", "full_pupil")),
     )
     opt_gain = focusing_gain(np.asarray(metrics["opt_intensity_1d"]), float(params["focusing_threshold"]))
     fzp_gain = focusing_gain(np.asarray(metrics["fzp_intensity_1d"]), float(params["focusing_threshold"]))
@@ -306,11 +311,13 @@ def _default_worker(task: dict[str, Any]) -> dict[str, Any]:
             "obj_list": obj_np,
             "opt_obj": float(metrics["opt_final_obj"]),
             "opt_eff": float(metrics["opt_efficiency"]),
+            "opt_active_radius_pixels": float(metrics["opt_active_radius_pixels"]),
             "opt_width": float(metrics["opt_width"]),
             "opt_gain": float(opt_gain),
             "opt_intensity": np.asarray(metrics["opt_intensity_1d"], dtype=INTENSITY_DTYPE),
             "fzp_obj": float(metrics["fzp_final_obj"]),
             "fzp_eff": float(metrics["fzp_efficiency"]),
+            "fzp_active_radius_pixels": float(metrics["fzp_active_radius_pixels"]),
             "fzp_width": float(metrics["fzp_width"]),
             "fzp_gain": float(fzp_gain),
             "fzp_intensity": np.asarray(metrics["fzp_intensity_1d"], dtype=INTENSITY_DTYPE),
@@ -369,10 +376,12 @@ def _collect_results(results: list[dict[str, Any]], axes: dict[str, Any], config
         "obj_lists": np.empty(shape, dtype=object),
         "opt_objs": np.full(shape, np.nan),
         "opt_efficiencies": np.full(shape, np.nan),
+        "opt_active_radii_pixels": np.full(shape, np.nan),
         "opt_gains": np.full(shape, np.nan),
         "opt_widths": np.full(shape, np.nan),
         "fzp_objs": np.full(shape, np.nan),
         "fzp_efficiencies": np.full(shape, np.nan),
+        "fzp_active_radii_pixels": np.full(shape, np.nan),
         "fzp_gains": np.full(shape, np.nan),
         "fzp_widths": np.full(shape, np.nan),
     }
@@ -393,10 +402,12 @@ def _collect_results(results: list[dict[str, Any]], axes: dict[str, Any], config
         out["obj_lists"][idx] = r["obj_list"]
         out["opt_objs"][idx] = r["opt_obj"]
         out["opt_efficiencies"][idx] = r["opt_eff"]
+        out["opt_active_radii_pixels"][idx] = r.get("opt_active_radius_pixels", np.nan)
         out["opt_gains"][idx] = r["opt_gain"]
         out["opt_widths"][idx] = r["opt_width"]
         out["fzp_objs"][idx] = r["fzp_obj"]
         out["fzp_efficiencies"][idx] = r["fzp_eff"]
+        out["fzp_active_radii_pixels"][idx] = r.get("fzp_active_radius_pixels", np.nan)
         out["fzp_gains"][idx] = r["fzp_gain"]
         out["fzp_widths"][idx] = r["fzp_width"]
         if nx_store > 0:
@@ -432,7 +443,7 @@ def run_sweep(runtime: SweepRuntimeConfig) -> None:
     base = _build_base_params("paper.sweeps.standard_params")
     tasks, config, axes = _build_tasks(runtime.config_module, base)
     save_prefix = str(config["SAVE_PREFIX"])
-    save_dir = runtime.save_dir or config.get("SAVE_DIR") or os.environ.get("DIFFRACTIVE_CASCADES_DATA_DIR", "outputs")
+    save_dir = runtime.save_dir or config.get("SAVE_DIR") or os.environ.get("DIFFRACTIVE_CASCADES_DATA_DIR", DEFAULT_DATA_DIR)
     n_runs = int(runtime.n_runs if runtime.n_runs is not None else config.get("N_RUNS", 1))
     save_run_suffix = bool(config.get("SAVE_RUN_SUFFIX", True)) or n_runs > 1
     console.kv(log, "save_prefix", save_prefix)
@@ -458,10 +469,10 @@ def run_sweep(runtime: SweepRuntimeConfig) -> None:
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     console.info(log, "set OMP/MKL/OpenBLAS threads to 1 for worker processes")
 
-    save_time = get_formatted_datetime()
+    save_time = output_timestamp(get_formatted_datetime(), enabled=runtime.timestamp_outputs)
     params_for_save = _prepare_params_for_save(base, config, axes)
-    params_path = f"{save_dir}/{save_prefix}_params_{save_time}.npy"
-    arrays_path = f"{save_dir}/{save_prefix}_sweep_arrays_{save_time}.npy"
+    params_path = dataset_path(save_dir, save_prefix, "params", timestamp=save_time)
+    arrays_path = dataset_path(save_dir, save_prefix, "sweep_arrays", timestamp=save_time)
     np.save(params_path, params_for_save)
     np.save(arrays_path, {k: np.asarray(v) for k, v in axes.items()})
     console.file_saved(log, params_path)
@@ -534,9 +545,9 @@ def run_sweep(runtime: SweepRuntimeConfig) -> None:
             console.warn(log, f"{n_failed} task(s) failed; see failed_task_* arrays in output")
         if save_run_suffix:
             arrays["run_id"] = np.int64(run_id)
-            result_path = f"{save_dir}/{save_prefix}_results_{save_time}_run_{run_id}.npz"
+            result_path = dataset_path(save_dir, save_prefix, "results", timestamp=save_time, run_id=run_id)
         else:
-            result_path = f"{save_dir}/{save_prefix}_results_{save_time}.npz"
+            result_path = dataset_path(save_dir, save_prefix, "results", timestamp=save_time)
         save_sweep_results(result_path, arrays, keys=config.get("RESULTS_SAVE_KEYS"))
         console.file_saved(log, result_path)
         console.elapsed(log, f"run {run_id + 1}/{n_runs} for {save_prefix}", time.time() - start)

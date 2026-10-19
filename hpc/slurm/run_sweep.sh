@@ -13,7 +13,7 @@ if [[ $# -lt 1 ]]; then
   echo "Examples:"
   echo "  sbatch run_sweep.sh n_sweeps"
   echo "  sbatch run_sweep.sh bandwidth_energy --workers-per-gpu 2"
-  echo "  sbatch run_sweep.sh thickness_energy_fig2a --save-dir paper_data"
+  echo "  sbatch run_sweep.sh thickness_energy --save-dir paper_data"
   echo
   echo "List studies with:"
   echo "  python paper/sweeps/run_sweep.py --list-studies"

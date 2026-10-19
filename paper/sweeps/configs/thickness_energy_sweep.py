@@ -1,15 +1,22 @@
+"""Shared 30x30 thickness-energy grid for current Figs. 2(a) and 2(c)."""
 import numpy as np
 
 from paper.sweeps.standard_params import N_ELEMENTS_DEFAULT, NX_DEFAULT
 
-SAVE_PREFIX = "fig2c_thickness_energy_sweep"
+SAVE_PREFIX = "fig2a_thickness_energy_sweep"
 SAVE_DIR = None
 N_RUNS = 1
 SAVE_RUN_SUFFIX = False
-SWEEP_AXES = {
-    "thicknesses": np.logspace(-7.3, -4.8, 40),
-    "energies": np.linspace(5e3, 27e3, 10),
+PARAM_OVERRIDES = {
+    "efficiency_normalization": "active_device_area",
 }
+
+# Fig. 2(a): match the 30x30 energy grid used alongside the bandwidth sweep.
+SWEEP_AXES = {
+    "thicknesses": np.logspace(-7.3, -4.8, 30),
+    "energies": np.linspace(5e3, 27e3, 30),
+}
+
 MAX_PARAMS = int(N_ELEMENTS_DEFAULT * NX_DEFAULT // 2)
 NX_STORE = int(NX_DEFAULT)
 

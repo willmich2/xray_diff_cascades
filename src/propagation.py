@@ -535,6 +535,184 @@ def angular_spectrum_propagation(
         U_z = U_z_padded
     return U_z
 
+
+def angular_spectrum_propagation_tilted(
+    U: torch.Tensor,
+    lam: torch.Tensor,
+    displacement: torch.Tensor,
+    source_rotation: torch.Tensor,
+    target_rotation: torch.Tensor,
+    dx: float,
+    device: torch.device,
+    pad: bool = True,
+    padding: float = 2.0,
+    interpolation_chunk_rows: int = 64,
+) -> torch.Tensor:
+    """
+    Propagate a field envelope between non-parallel planes using a rotated
+    angular spectrum.
+
+    The 3x3 rotations map local plane coordinates to global coordinates, and
+    ``displacement`` points from the source-plane center to the target-plane
+    center. The field is represented as an envelope around a global +z carrier;
+    factoring out that carrier avoids trying to sample the very rapid phase ramp
+    of an obliquely illuminated x-ray plane. Interpolation is chunked by target
+    rows to keep the sampling-grid memory small on the large 2D grids used by
+    the x-ray studies.
+
+    This routine accepts one wavelength per call. The 2D forward models already
+    evaluate wavelengths sequentially.
+    """
+    if U.ndim != 3 or U.shape[0] != 1:
+        raise ValueError(
+            "angular_spectrum_propagation_tilted expects U with shape (1, Ny, Nx)"
+        )
+    if int(lam.numel()) != 1:
+        raise ValueError(
+            "angular_spectrum_propagation_tilted expects exactly one wavelength"
+        )
+    if source_rotation.shape != (3, 3) or target_rotation.shape != (3, 3):
+        raise ValueError("source_rotation and target_rotation must have shape (3, 3)")
+    if int(displacement.numel()) != 3:
+        raise ValueError("displacement must contain three global coordinates")
+    if interpolation_chunk_rows < 1:
+        raise ValueError("interpolation_chunk_rows must be positive")
+
+    if not torch.is_complex(U):
+        U = U.to(torch.complex128)
+
+    complex_dtype = U.dtype
+    real_dtype = complex_to_real_dtype(complex_dtype)
+    source_rotation = source_rotation.to(device=device, dtype=real_dtype)
+    target_rotation = target_rotation.to(device=device, dtype=real_dtype)
+    displacement = displacement.reshape(3).to(device=device, dtype=real_dtype)
+
+    Ny_original, Nx_original = U.shape[-2:]
+    if pad:
+        if padding < 1.0:
+            raise ValueError(f"padding must be >= 1 (got {padding})")
+        U_padded = U if padding == 1.0 else pad_double_both(U, padding=padding)
+    else:
+        U_padded = U
+    _, Ny_padded, Nx_padded = U_padded.shape
+
+    pi = torch.acos(torch.tensor(-1.0, dtype=real_dtype, device=device))
+    k0 = 2.0 * pi / lam.reshape(()).to(device=device, dtype=real_dtype)
+    kx = torch.fft.fftshift(
+        2.0 * pi * torch.fft.fftfreq(Nx_padded, d=dx, dtype=real_dtype, device=device)
+    )
+    ky = torch.fft.fftshift(
+        2.0 * pi * torch.fft.fftfreq(Ny_padded, d=dx, dtype=real_dtype, device=device)
+    )
+
+    source_spectrum = torch.fft.fftshift(
+        torch.fft.fft2(U_padded, dim=(-2, -1)),
+        dim=(-2, -1),
+    )
+    del U_padded
+
+    # grid_sample has no complex implementation. Interpolate real and imaginary
+    # parts as channels so they use identical coordinates.
+    source_channels = torch.view_as_real(source_spectrum.squeeze(0))
+    source_channels = source_channels.permute(2, 0, 1).unsqueeze(0)
+    target_spectrum = torch.empty(
+        (Ny_padded, Nx_padded), dtype=complex_dtype, device=device
+    )
+
+    source_x = source_rotation[:, 0]
+    source_y = source_rotation[:, 1]
+    source_n = source_rotation[:, 2]
+    target_x = target_rotation[:, 0]
+    target_y = target_rotation[:, 1]
+    target_n = target_rotation[:, 2]
+    # Transverse coordinates of the global +z carrier in each local plane.
+    source_carrier_x = k0 * source_x[2]
+    source_carrier_y = k0 * source_y[2]
+    target_carrier_x = k0 * target_x[2]
+    target_carrier_y = k0 * target_y[2]
+
+    kx_min, kx_max = kx[0], kx[-1]
+    ky_min, ky_max = ky[0], ky[-1]
+    kx_span = kx_max - kx_min
+    ky_span = ky_max - ky_min
+
+    for row_start in range(0, Ny_padded, interpolation_chunk_rows):
+        row_stop = min(row_start + interpolation_chunk_rows, Ny_padded)
+        ky_target = ky[row_start:row_stop]
+        KY_envelope_t, KX_envelope_t = torch.meshgrid(ky_target, kx, indexing="ij")
+        KX_t = KX_envelope_t + target_carrier_x
+        KY_t = KY_envelope_t + target_carrier_y
+        KZ_t = torch.sqrt(torch.clamp(k0**2 - KX_t**2 - KY_t**2, min=0.0))
+
+        K_global_x = KX_t * target_x[0] + KY_t * target_y[0] + KZ_t * target_n[0]
+        K_global_y = KX_t * target_x[1] + KY_t * target_y[1] + KZ_t * target_n[1]
+        K_global_z = KX_t * target_x[2] + KY_t * target_y[2] + KZ_t * target_n[2]
+
+        KX_s_physical = (
+            K_global_x * source_x[0]
+            + K_global_y * source_x[1]
+            + K_global_z * source_x[2]
+        )
+        KY_s_physical = (
+            K_global_x * source_y[0]
+            + K_global_y * source_y[1]
+            + K_global_z * source_y[2]
+        )
+        KZ_s = (
+            K_global_x * source_n[0]
+            + K_global_y * source_n[1]
+            + K_global_z * source_n[2]
+        )
+        KX_s = KX_s_physical - source_carrier_x
+        KY_s = KY_s_physical - source_carrier_y
+
+        grid_x = 2.0 * (KX_s - kx_min) / kx_span - 1.0
+        grid_y = 2.0 * (KY_s - ky_min) / ky_span - 1.0
+        sample_grid = torch.stack((grid_x, grid_y), dim=-1).unsqueeze(0)
+        sampled_channels = F.grid_sample(
+            source_channels,
+            sample_grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        )
+        sampled = torch.complex(sampled_channels[0, 0], sampled_channels[0, 1])
+
+        # Coordinate-change Jacobian for the carrier-referenced envelope.
+        # Normalize by its carrier value so an unobstructed global +z plane
+        # wave retains unit amplitude when moving between tilted planes.
+        carrier_jacobian = source_n[2] / torch.clamp(
+            target_n[2], min=torch.finfo(real_dtype).eps
+        )
+        jacobian = (
+            KZ_s
+            / torch.clamp(KZ_t, min=torch.finfo(real_dtype).eps)
+            / carrier_jacobian
+        )
+        phase = torch.exp(
+            1j
+            * (
+                K_global_x * displacement[0]
+                + K_global_y * displacement[1]
+                + (K_global_z - k0) * displacement[2]
+            )
+        )
+        valid = (KZ_s > 0.0) & (KZ_t > 0.0)
+        target_spectrum[row_start:row_stop] = torch.where(
+            valid,
+            sampled * jacobian.to(sampled.dtype) * phase,
+            torch.zeros((), dtype=complex_dtype, device=device),
+        )
+
+    U_target_padded = torch.fft.ifft2(
+        torch.fft.ifftshift(target_spectrum, dim=(-2, -1)),
+        dim=(-2, -1),
+    ).unsqueeze(0)
+    if pad:
+        return unpad_half_both(U_target_padded, Ny_original, Nx_original)
+    return U_target_padded
+
+
 def propagate_z(
     U: torch.Tensor,
     z: float | torch.Tensor,

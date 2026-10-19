@@ -20,7 +20,7 @@ from src.util import (  # type: ignore
 from src.simparams import SimParams  # type: ignore
 from src.forwardmodels import forward_model_N_elements_mask_2d  # type: ignore
 from src.inversedesign_utils import zp_init  # type: ignore
-from paper.postprocess.fig1_inputs import (
+from paper.data_paths import (
     DEFAULT_BASE_SWEEP_ID,
     DEFAULT_DATA_DIR,
     output_id_label,
@@ -420,24 +420,28 @@ if __name__ == "__main__":
                 )
 
     save_time = get_formatted_datetime()
-    save_path = str(
-        robustness_results_path(
-            args.data_dir, "fig3d_erosion_dilation_robustness_results", args.base_id, save_time
+    output_prefixes = {
+        "erode": "fig3d_erosion_robustness_results",
+        "dilate": "figS4a_dilation_robustness_results",
+    }
+    for op_idx, operation in enumerate(morph_operations):
+        save_path = str(
+            robustness_results_path(
+                args.data_dir, output_prefixes[operation], args.base_id, save_time
+            )
         )
-    )
-    np.savez(
-        save_path,
-        fzp_mean_efficiencies=fzp_mean_efficiencies,
-        opt_mean_efficiencies=opt_mean_efficiencies,
-        fzp_std_efficiencies=fzp_std_efficiencies,
-        opt_std_efficiencies=opt_std_efficiencies,
-        choices=np.array(choices, dtype=np.int64),
-        Nelem_arr=np.array(Nelem_arr, dtype=np.int64),
-        morph_error_levels=levels,
-        morph_operations=np.array(morph_operations, dtype=np.str_),
-        strength_pixels_arr=strength_pixels_arr,
-        ID=np.array([output_id_label(args.base_id)]),
-    )
-    console.file_saved(_LOG, save_path)
+        np.savez(
+            save_path,
+            fzp_mean_efficiencies=fzp_mean_efficiencies[:, :, op_idx],
+            opt_mean_efficiencies=opt_mean_efficiencies[:, :, op_idx],
+            fzp_std_efficiencies=fzp_std_efficiencies[:, :, op_idx],
+            opt_std_efficiencies=opt_std_efficiencies[:, :, op_idx],
+            choices=np.array(choices, dtype=np.int64),
+            Nelem_arr=np.array(Nelem_arr, dtype=np.int64),
+            morph_error_levels=levels,
+            morph_operations=np.array([operation], dtype=np.str_),
+            strength_pixels_arr=strength_pixels_arr,
+            ID=np.array([output_id_label(args.base_id)]),
+        )
+        console.file_saved(_LOG, save_path)
     console.script_done(_LOG, start_time)
-

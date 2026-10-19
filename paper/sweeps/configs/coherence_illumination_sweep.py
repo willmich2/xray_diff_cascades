@@ -4,7 +4,7 @@ import numpy as np
 
 from paper.sweeps.standard_params import N_ELEMENTS_DEFAULT, NX_DEFAULT, DX_DEFAULT
 
-SAVE_PREFIX = "figA1_coherence_illumination_sweep"
+SAVE_PREFIX = "figS1_coherence_illumination_sweep"
 SAVE_DIR = None
 N_RUNS = 1
 _aperture_width = NX_DEFAULT * DX_DEFAULT

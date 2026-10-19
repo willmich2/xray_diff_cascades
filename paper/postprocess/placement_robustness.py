@@ -19,7 +19,7 @@ from src.util import (  # type: ignore
 from src.simparams import SimParams  # type: ignore
 from src.forwardmodels import forward_model_N_elements_mask_2d  # type: ignore
 from src.inversedesign_utils import zp_init  # type: ignore
-from paper.postprocess.fig1_inputs import (
+from paper.data_paths import (
     DEFAULT_BASE_SWEEP_ID,
     DEFAULT_DATA_DIR,
     output_id_label,

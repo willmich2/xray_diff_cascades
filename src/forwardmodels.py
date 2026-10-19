@@ -1,7 +1,12 @@
 import torch # type: ignore
 import numpy as np # type: ignore
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
-from .propagation import propagate_z, angular_spectrum_propagation, qdht_order_l_propagation
+from .propagation import (
+    propagate_z,
+    angular_spectrum_propagation,
+    angular_spectrum_propagation_tilted,
+    qdht_order_l_propagation,
+)
 from .sources import plane_wave, gsm_modes_1d, gsm_modes_2d_lg
 from .elements import ArbitraryElement
 from .simparams import SimParams
@@ -1101,7 +1106,8 @@ def forward_model_N_elements_mask_2d(
     z_distances: torch.Tensor,
     center_offsets: tuple[tuple[float, float], ...] | None = None,
     inference_only: bool = False,
-    padding: float = 2.0
+    padding: float = 2.0,
+    tilt_angles: tuple[tuple[float, float], ...] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     2D version of forward_model_N_elements_mask.
@@ -1131,9 +1137,16 @@ def forward_model_N_elements_mask_2d(
               (center-to-edge) is spherized into a 2D mask.
         z_distances: 1D tensor of N propagation distances, one after each element.
         center_offsets: Optional tuple of N (x, y) offsets for each element.
+                        When tilts are present, offsets are in each element's
+                        local transverse coordinates.
         inference_only: If True, run under torch.no_grad() and skip gradient
                         checkpoint; gradients are not tracked and memory use is
                         lower. Use for forward-only evaluation.
+        tilt_angles: Optional tuple of N ``(theta_x, theta_y)`` rotations in
+                     radians. Rotations are about each element's center and use
+                     ``R = R_y(theta_y) @ R_x(theta_x)``. Omitting this argument,
+                     or supplying all-zero tilts, uses the original parallel-plane
+                     implementation unchanged.
 
     Returns:
         obj: Sum of intensity overlap with the 2D mask.
@@ -1142,6 +1155,20 @@ def forward_model_N_elements_mask_2d(
     N = z_distances.shape[0]
     if center_offsets is None:
         center_offsets = tuple((0.0, 0.0) for _ in range(N))
+    if len(center_offsets) != N:
+        raise ValueError(
+            f"Number of center offsets ({len(center_offsets)}) must match number of elements ({N})"
+        )
+    if tilt_angles is None:
+        tilt_angles = tuple((0.0, 0.0) for _ in range(N))
+    if len(tilt_angles) != N:
+        raise ValueError(
+            f"Number of tilt-angle pairs ({len(tilt_angles)}) must match number of elements ({N})"
+        )
+    use_tilted_planes = any(
+        float(theta_x) != 0.0 or float(theta_y) != 0.0
+        for theta_x, theta_y in tilt_angles
+    )
 
     x_part_size = x.shape[0] // N
     x_parts = tuple(torch.flip(x[i * x_part_size:(i + 1) * x_part_size], dims=(0,)) for i in range(N))
@@ -1158,12 +1185,40 @@ def forward_model_N_elements_mask_2d(
     dx = sim_params.dx
     del sim_params
 
+    def _rotation_matrix(theta_x: float, theta_y: float) -> torch.Tensor:
+        tx = torch.tensor(theta_x, dtype=real_dtype, device=device)
+        ty = torch.tensor(theta_y, dtype=real_dtype, device=device)
+        cx, sx = torch.cos(tx), torch.sin(tx)
+        cy, sy = torch.cos(ty), torch.sin(ty)
+        zero = torch.zeros((), dtype=real_dtype, device=device)
+        one = torch.ones((), dtype=real_dtype, device=device)
+        rotation_x = torch.stack(
+            (
+                torch.stack((one, zero, zero)),
+                torch.stack((zero, cx, -sx)),
+                torch.stack((zero, sx, cx)),
+            )
+        )
+        rotation_y = torch.stack(
+            (
+                torch.stack((cy, zero, sy)),
+                torch.stack((zero, one, zero)),
+                torch.stack((-sy, zero, cy)),
+            )
+        )
+        return rotation_y @ rotation_x
+
+    rotations = tuple(_rotation_matrix(float(tx), float(ty)) for tx, ty in tilt_angles)
+    lab_rotation = torch.eye(3, dtype=real_dtype, device=device)
     def _forward(*x_parts_inner):
         I_acc = torch.zeros(
             (Ny, Nx), dtype=real_dtype, device=device
         )
         for w in range(len(weights)):
             lam_w = lams[w : w + 1]
+            # Both propagators use a field envelope around the global +z
+            # plane-wave carrier, so the incident envelope is uniform even on
+            # a tilted first element.
             U_w = torch.ones(
                 (1, Ny, Nx),
                 dtype=dtype,
@@ -1187,9 +1242,30 @@ def forward_model_N_elements_mask_2d(
                     )
                 U_w = U_w * transmission_w.to(U_w.dtype)
                 del transmission_w
-                U_w = angular_spectrum_propagation(
-                    U_w, lam_w, z, dx, device, pad=True, padding=padding
-                )
+                if use_tilted_planes:
+                    target_rotation = rotations[i + 1] if i + 1 < N else lab_rotation
+                    displacement = torch.stack(
+                        (
+                            torch.zeros((), dtype=real_dtype, device=device),
+                            torch.zeros((), dtype=real_dtype, device=device),
+                            z.to(dtype=real_dtype, device=device),
+                        )
+                    )
+                    U_w = angular_spectrum_propagation_tilted(
+                        U_w,
+                        lam_w,
+                        displacement,
+                        rotations[i],
+                        target_rotation,
+                        dx,
+                        device,
+                        pad=True,
+                        padding=padding,
+                    )
+                else:
+                    U_w = angular_spectrum_propagation(
+                        U_w, lam_w, z, dx, device, pad=True, padding=padding
+                    )
             I_acc = I_acc + weights[w] * (U_w.abs() ** 2).squeeze(0)
         return I_acc
 

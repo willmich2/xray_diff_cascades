@@ -319,15 +319,18 @@ def compute_width_and_efficiency_from_2d(
     min_feature_size: float,
     focusing_threshold: float,
     crop_width: int,
+    normalization_radius_pixels: float | None = None,
 ) -> tuple[float, float, np.ndarray, np.ndarray]:
     """
     Common helper: given a 2D focal-plane intensity, compute
     - cropped intensity around the center (crop_width x crop_width)
     - effective focal spot width (in pixels, radius)
-    - efficiency (power in circular aperture / power in pupil of radius Nx/2)
+    - efficiency (power in circular aperture / incident power over the
+      normalization area)
 
     The logic mirrors the post-processing in scripts/xray_focusing_testing.py
     (central symmetric 1D profile for width, circular aperture for efficiency).
+    By default, the normalization area is the full pupil of radius Nx/2.
     """
     if intensity_2d.ndim != 2:
         raise ValueError("intensity_2d must be a 2D array")
@@ -361,7 +364,13 @@ def compute_width_and_efficiency_from_2d(
     dist_sq = (x - crop_width // 2) ** 2 + (y - crop_width // 2) ** 2
     eff_mask = dist_sq <= width**2
 
-    efficiency = cropped[eff_mask].sum() / (np.pi * (Nx / 2) ** 2)
+    if normalization_radius_pixels is None:
+        normalization_radius_pixels = Nx / 2
+    normalization_radius_pixels = float(normalization_radius_pixels)
+    if not np.isfinite(normalization_radius_pixels) or normalization_radius_pixels <= 0:
+        raise ValueError("normalization_radius_pixels must be finite and positive")
+
+    efficiency = cropped[eff_mask].sum() / (np.pi * normalization_radius_pixels**2)
 
     return float(width), float(efficiency), cropped, center_row
 
@@ -378,6 +387,8 @@ def compute_opt_and_fzp_metrics_2d(
     forward_model_2d: Callable[..., Any],
     zp_init_func: Callable[..., Any],
     compute_fzp: bool = True,
+    efficiency_normalization: str = "full_pupil",
+    design_normalization_radius_pixels: float | None = None,
 ) -> Dict[str, Any]:
     """
     Standardized computation of optimized and (optionally) FZP metrics.
@@ -391,6 +402,14 @@ def compute_opt_and_fzp_metrics_2d(
     In both cases, width/efficiency and stored 1D traces come from the same
     `compute_width_and_efficiency_from_2d` path so metric definitions are
     consistent across propagation methods.
+
+    ``efficiency_normalization`` controls the FZP denominator:
+    - ``"full_pupil"`` uses the full simulated pupil, matching legacy results.
+    - ``"active_device_area"`` uses the fabrication-limited FZP radius.
+      The optimized cascade uses the full pupil unless
+      ``design_normalization_radius_pixels`` is supplied. The latter supports
+      primary designs, such as an FZP cascade, whose entrance aperture is
+      smaller than the simulated pupil.
     """
     if rho_bar is None:
         raise ValueError("rho_bar must be a tensor")
@@ -409,6 +428,11 @@ def compute_opt_and_fzp_metrics_2d(
     dtype = getattr(sim_params_1d, "dtype")
     lams = getattr(sim_params_1d, "lams")
     weights = getattr(sim_params_1d, "weights")
+
+    valid_efficiency_normalizations = {"full_pupil", "active_device_area"}
+    if efficiency_normalization not in valid_efficiency_normalizations:
+        valid = ", ".join(sorted(valid_efficiency_normalizations))
+        raise ValueError(f"efficiency_normalization must be one of: {valid}")
 
     propagation_method = str(elem_params.get("propagation_method", "angular")).lower()
     use_qdht_eval = propagation_method == "qdht"
@@ -473,6 +497,7 @@ def compute_opt_and_fzp_metrics_2d(
     def _evaluate_metrics_for_design(
         design_x: torch.Tensor,
         design_fwd_model_args: tuple,
+        normalization_radius_pixels: float,
     ) -> tuple[float, float, float, np.ndarray, np.ndarray]:
         if use_qdht_eval:
             obj_t, intensity_1d_t = forward_model_1d(
@@ -500,17 +525,33 @@ def compute_opt_and_fzp_metrics_2d(
             min_feature_size=min_feature_size,
             focusing_threshold=focusing_threshold,
             crop_width=crop_width,
+            normalization_radius_pixels=normalization_radius_pixels,
         )
         return final_obj, width, efficiency, cropped, center_row
 
+    full_pupil_radius_pixels = Nx / 2
+    if design_normalization_radius_pixels is None:
+        design_active_radius_pixels = full_pupil_radius_pixels
+    else:
+        design_active_radius_pixels = float(design_normalization_radius_pixels)
+        if (
+            not np.isfinite(design_active_radius_pixels)
+            or design_active_radius_pixels <= 0
+            or design_active_radius_pixels > full_pupil_radius_pixels
+        ):
+            raise ValueError(
+                "design_normalization_radius_pixels must be finite, positive, "
+                "and no larger than Nx/2"
+            )
     opt_final_obj, opt_width, opt_efficiency, opt_cropped, opt_center_row = _evaluate_metrics_for_design(
-        rho_bar, fwd_model_args
+        rho_bar, fwd_model_args, design_active_radius_pixels
     )
 
     result: Dict[str, Any] = {
         "opt_final_obj": float(opt_final_obj),
         "opt_width": float(opt_width),
         "opt_efficiency": float(opt_efficiency),
+        "opt_active_radius_pixels": float(design_active_radius_pixels),
         "opt_intensity_cropped": opt_cropped,
         "opt_intensity_1d": opt_center_row,
     }
@@ -528,7 +569,7 @@ def compute_opt_and_fzp_metrics_2d(
             f_scalar = float(z_last)
 
         # Build zone-plate design using provided zp_init
-        lam_center = lams[lams.argmax()]
+        lam_center = lams[weights.argmax()]
         fzp_profile = zp_init_func(lam_center, f_scalar, min_feature_size, 1, sim_params_1d)
         if isinstance(fzp_profile, torch.Tensor):
             fzp_x = fzp_profile.to(device=device, dtype=torch.float64)
@@ -539,8 +580,17 @@ def compute_opt_and_fzp_metrics_2d(
         fzp_centers = ((0.0, 0.0),)
         fzp_fwd_model_args = (elem_params, mask, fzp_z_dists, fzp_centers)
 
+        fzp_cutoff_radius_pixels = min(
+            full_pupil_radius_pixels,
+            _scalar_to_float(lam_center) * f_scalar / (2 * min_feature_size * dx),
+        )
+        fzp_normalization_radius_pixels = (
+            fzp_cutoff_radius_pixels
+            if efficiency_normalization == "active_device_area"
+            else full_pupil_radius_pixels
+        )
         fzp_final_obj, fzp_width, fzp_efficiency, fzp_cropped, fzp_center_row = _evaluate_metrics_for_design(
-            fzp_x, fzp_fwd_model_args
+            fzp_x, fzp_fwd_model_args, fzp_normalization_radius_pixels
         )
 
         result.update(
@@ -548,6 +598,7 @@ def compute_opt_and_fzp_metrics_2d(
                 "fzp_final_obj": float(fzp_final_obj),
                 "fzp_width": float(fzp_width),
                 "fzp_efficiency": float(fzp_efficiency),
+                "fzp_active_radius_pixels": float(fzp_cutoff_radius_pixels),
                 "fzp_intensity_cropped": fzp_cropped,
                 "fzp_intensity_1d": fzp_center_row,
                 "fzp_x": fzp_x,

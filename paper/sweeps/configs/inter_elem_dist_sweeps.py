@@ -2,7 +2,7 @@ import numpy as np
 
 from paper.sweeps.standard_params import NX_DEFAULT
 
-SAVE_PREFIX = "figA3b_inter_elem_dist_sweeps"
+SAVE_PREFIX = "figS3b_inter_elem_dist_sweeps"
 SAVE_DIR = None
 N_RUNS = 1
 SAVE_RUN_SUFFIX = True

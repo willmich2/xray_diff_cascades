@@ -6,7 +6,7 @@ from paper.sweeps.fzp_cascade_worker import (
 )
 from paper.sweeps.standard_params import N_ELEMENTS_DEFAULT, NX_DEFAULT
 
-SAVE_PREFIX = "fzp_cascade_bandwidth_energy_sweep"
+SAVE_PREFIX = "figS5b_fzp_cascade_bandwidth_energy_sweep"
 SAVE_DIR = None
 N_RUNS = 1
 SAVE_RUN_SUFFIX = False
@@ -25,6 +25,7 @@ PARAM_OVERRIDES = {
     "Nelem": int(N_ELEMENTS_DEFAULT),
     "fzp_inter_elem_dist": float(FZP_INTER_ELEM_DIST_DEFAULT),
     "fzp_baseline": "cascade",
+    "efficiency_normalization": "active_device_area",
 }
 
 worker_fn = fzp_cascade_vs_opt_worker
